@@ -1,30 +1,95 @@
 {
+  "meta": {
+    "version": "2.0",
+    "description": "Configurazione universale per sistema di ingestione documenti",
+    "last_updated": "2024-12-16"
+  },
   "sources": [
     {
       "name": "camera",
       "enabled": true,
+      "description": "Resoconti stenografici Camera dei Deputati",
       "downloader_script": "download_camera_pdf.py",
-      "downloader_args": { "leg": "19" },
-      "local_output_subdir": "camera",
+      "downloader_args": {
+        "leg": "19"
+      },
+      "local_output_subdir": ".",
       "bucket": "test_camerasenato",
       "gcs_prefix": "atti_parlamentari",
-      "file_patterns": ["*.pdf", "*.json"]
+      "file_patterns": ["*.pdf", "*.json"],
+      "default_start_date": "2022-10-01",
+      "metadata": {
+        "source_type": "parliamentary_records",
+        "institution": "camera_deputati",
+        "document_type": "stenographic_report",
+        "language": "it"
+      }
     },
     {
       "name": "senato",
       "enabled": true,
+      "description": "Resoconti stenografici Senato della Repubblica",
       "downloader_script": "download_senato_pdf.py",
-      "downloader_args": { "leg": "19" },
+      "downloader_args": {
+        "leg": "19"
+      },
       "local_output_subdir": "senato",
       "bucket": "test_camerasenato2",
       "gcs_prefix": "resoconti_stenografici",
-      "file_patterns": ["*.pdf", "*.json"]
+      "file_patterns": ["*.pdf", "*.json"],
+      "default_start_date": "2022-10-01",
+      "metadata": {
+        "source_type": "parliamentary_records",
+        "institution": "senato_repubblica",
+        "document_type": "stenographic_report",
+        "language": "it"
+      }
     }
   ],
-  "rename": {
-    "script": "rename_gcs_vertex_flash.py"
-  },
   "upload": {
-    "script": "upload_gcs_ingest.py"
+    "script": "upload_gcs_ingest.py",
+    "default_patterns": ["*.pdf", "*.json", "*.txt", "*.xml"],
+    "backup_metadata": true,
+    "compress_large_files": false
+  },
+  "rename": {
+    "script": "rename_gcs_vertex_flash.py",
+    "model_config": {
+      "project_id": "progetto-analisi-sentiment",
+      "region": "global",
+      "model_id": "publishers/google/models/gemini-2.0-flash-lite"
+    },
+    "processing": {
+      "max_workers": 16,
+      "max_pages_pdf": 3,
+      "max_chars_content": 4000
+    }
+  },
+  "global_settings": {
+    "default_retry_attempts": 3,
+    "default_timeout_seconds": 60,
+    "rate_limit_delay_seconds": 1.0,
+    "max_concurrent_downloads": 8,
+    "log_level": "INFO"
+  },
+  "templates": {
+    "new_source": {
+      "name": "template_source",
+      "enabled": false,
+      "description": "Template per nuove fonti",
+      "downloader_script": "download_template.py",
+      "downloader_args": {},
+      "local_output_subdir": "template",
+      "bucket": "your-bucket-name",
+      "gcs_prefix": "template_docs",
+      "file_patterns": ["*.pdf", "*.json"],
+      "default_start_date": "2024-01-01",
+      "metadata": {
+        "source_type": "documents",
+        "institution": "template_org",
+        "document_type": "generic",
+        "language": "it"
+      }
+    }
   }
 }

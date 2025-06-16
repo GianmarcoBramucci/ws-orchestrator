@@ -1,17 +1,27 @@
-# Per fare richieste HTTP (scaricare pagine web, chiamare API)
-requests
+# Core HTTP e web scraping
+requests>=2.31.0
+beautifulsoup4>=4.12.0
 
-# Per analizzare il contenuto delle pagine HTML (web scraping)
-beautifulsoup4
+# Google Cloud Platform
+google-cloud-storage>=2.10.0
+google-auth>=2.23.0
 
-# Per interagire con Google Cloud Storage (bucket, file)
-google-cloud-storage
+# PDF processing
+pdfplumber>=0.9.0
 
-# Per l'autenticazione con le API di Google (incluso Vertex AI)
-google-auth
+# Progress bars e UI
+tqdm>=4.66.0
 
-# Per estrarre testo dai file PDF (usato dallo script di rinomina)
-pdfplumber
+# Data handling
+python-dateutil>=2.8.0
 
-# Per mostrare le barre di progresso fighe e utili
-tqdm
+# Optional: per logging avanzato
+colorlog>=6.7.0
+
+# Optional: per validazione JSON schema
+jsonschema>=4.19.0
+
+# Development tools (optional)
+black>=23.0.0
+flake8>=6.0.0
+mypy>=1.5.0
