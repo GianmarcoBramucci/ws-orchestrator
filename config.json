@@ -1,0 +1,30 @@
+{
+  "sources": [
+    {
+      "name": "camera",
+      "enabled": true,
+      "downloader_script": "download_camera_pdf.py",
+      "downloader_args": { "leg": "19" },
+      "local_output_subdir": "camera",
+      "bucket": "test_camerasenato",
+      "gcs_prefix": "atti_parlamentari",
+      "file_patterns": ["*.pdf", "*.json"]
+    },
+    {
+      "name": "senato",
+      "enabled": true,
+      "downloader_script": "download_senato_pdf.py",
+      "downloader_args": { "leg": "19" },
+      "local_output_subdir": "senato",
+      "bucket": "test_camerasenato2",
+      "gcs_prefix": "resoconti_stenografici",
+      "file_patterns": ["*.pdf", "*.json"]
+    }
+  ],
+  "rename": {
+    "script": "rename_gcs_vertex_flash.py"
+  },
+  "upload": {
+    "script": "upload_gcs_ingest.py"
+  }
+}

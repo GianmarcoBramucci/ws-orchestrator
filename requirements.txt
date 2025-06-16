@@ -1,0 +1,17 @@
+# Per fare richieste HTTP (scaricare pagine web, chiamare API)
+requests
+
+# Per analizzare il contenuto delle pagine HTML (web scraping)
+beautifulsoup4
+
+# Per interagire con Google Cloud Storage (bucket, file)
+google-cloud-storage
+
+# Per l'autenticazione con le API di Google (incluso Vertex AI)
+google-auth
+
+# Per estrarre testo dai file PDF (usato dallo script di rinomina)
+pdfplumber
+
+# Per mostrare le barre di progresso fighe e utili
+tqdm
