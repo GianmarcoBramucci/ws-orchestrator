@@ -1,7 +1,7 @@
 {
   "meta": {
-    "version": "2.0",
-    "description": "Configurazione universale per sistema di ingestione documenti",
+    "version": "2.1",
+    "description": "Configurazione universale per sistema di ingestione documenti v2.1",
     "last_updated": "2024-12-16"
   },
   "sources": [
@@ -13,7 +13,7 @@
       "downloader_args": {
         "leg": "19"
       },
-      "local_output_subdir": ".",
+      "local_output_subdir": "camera",
       "bucket": "test_camerasenato",
       "gcs_prefix": "atti_parlamentari",
       "file_patterns": ["*.pdf", "*.json"],
@@ -50,27 +50,32 @@
     "script": "upload_gcs_ingest.py",
     "default_patterns": ["*.pdf", "*.json", "*.txt", "*.xml"],
     "backup_metadata": true,
-    "compress_large_files": false
+    "compress_large_files": false,
+    "max_file_size_mb": 100,
+    "calculate_checksums": true
   },
   "rename": {
     "script": "rename_gcs_vertex_flash.py",
     "model_config": {
       "project_id": "progetto-analisi-sentiment",
-      "region": "global",
+      "region": "us-central1",
       "model_id": "publishers/google/models/gemini-2.0-flash-lite"
     },
     "processing": {
       "max_workers": 16,
       "max_pages_pdf": 3,
-      "max_chars_content": 4000
+      "max_chars_content": 4000,
+      "timeout_per_file": 120
     }
   },
   "global_settings": {
     "default_retry_attempts": 3,
-    "default_timeout_seconds": 60,
+    "default_timeout_seconds": 3600,
     "rate_limit_delay_seconds": 1.0,
     "max_concurrent_downloads": 8,
-    "log_level": "INFO"
+    "log_level": "INFO",
+    "respect_robots_txt": true,
+    "user_agent": "Parliamentary Documents Scraper 2.1"
   },
   "templates": {
     "new_source": {
@@ -90,6 +95,38 @@
         "document_type": "generic",
         "language": "it"
       }
+    },
+    "parliamentary_source": {
+      "name": "new_parliament_source",
+      "enabled": false,
+      "description": "Template per nuove fonti parlamentari",
+      "downloader_script": "download_new_parliament.py",
+      "downloader_args": {
+        "leg": "19"
+      },
+      "local_output_subdir": "new_parliament",
+      "bucket": "your-parliament-bucket",
+      "gcs_prefix": "parliamentary_docs",
+      "file_patterns": ["*.pdf", "*.json", "*.xml"],
+      "default_start_date": "2022-01-01",
+      "metadata": {
+        "source_type": "parliamentary_records",
+        "institution": "new_institution",
+        "document_type": "stenographic_report",
+        "language": "it"
+      }
     }
+  },
+  "monitoring": {
+    "enable_metrics": true,
+    "log_upload_stats": true,
+    "alert_on_failures": false,
+    "max_consecutive_failures": 5
+  },
+  "development": {
+    "debug_mode": false,
+    "dry_run": false,
+    "verbose_logging": false,
+    "save_intermediate_results": true
   }
 }

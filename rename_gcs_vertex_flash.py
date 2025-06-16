@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-rename_gcs_vertex_flash.py — v7.0 (Strategia Multi-Formato)
+rename_gcs_vertex_flash.py — v7.1 (Fixed Import Error)
 ===========================================================
 Rinomina file (PDF, TXT, XML, etc.) in GCS basandosi sul loro contenuto,
 utilizzando un modello Gemini in Vertex AI.
@@ -10,14 +10,12 @@ supporto per nuovi formati richiede solo di estendere la funzione
 `extract_text_from_gcs_blob`.
 """
 from __future__ import annotations
-import os, re, csv, json, time, argparse, traceback
+import os, re, csv, json, time, argparse, traceback, sys
 from pathlib import Path
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import List, Dict, Set, Tuple, Optional, Final
 from io import BytesIO
 from urllib.parse import urlparse
-
-# --- PRE-REQUISITI: pip install google-cloud-storage pdfplumber google-auth requests tqdm ---
 
 # ───────────────────────────────────────────────────────────── CONFIG
 LOG_FILE: str               = "rename_gcs_log.csv"

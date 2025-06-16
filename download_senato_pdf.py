@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """
-download_senato_pdf_fixed.py - v4 "Il Robusto"
-================================================
-Versione corretta e migliorata per scaricare i PDF del Senato.
-Sistema di retry robusto e gestione errori migliorata.
+download_senato_pdf.py - v7 "Basato sul tuo script funzionante"
+===============================================================
+Mantiene ESATTAMENTE la logica del tuo scarica_senato_pdf.py funzionante,
+solo con interfaccia --leg --from --out per l'orchestratore.
 """
-from __future__ import annotations  # ✅ CON import, non _import
+from __future__ import annotations
 import argparse
 import datetime as dt
 import json
@@ -14,264 +14,218 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import List, Tuple, Optional
+from typing import List, Optional, Tuple
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
 
-# Configurazione migliorata
-CONFIG = {
-    "delays": {
-        "html": 1.5,
-        "pdf": 0.5,
-        "jitter": 0.3
-    },
-    "retries": {
-        "max_attempts": 3,
-        "backoff_factor": 2
-    },
-    "timeouts": {
-        "html": 20,
-        "pdf": 120
-    },
-    "headers": {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                     "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"
-    }
-}
+# ――― Config (identica al tuo script) ―――
+DELAY_HTML = 10.0    # rispetto robots.txt
+DELAY_PDF = 1.5
+JITTER_HTML = 1.5
+JITTER_PDF = 0.8
+RETRIES = 3          # tentativi per PDF
+TIMEOUT_HTML = 20
+TIMEOUT_PDF = 60     # read‑timeout per i PDF (alcuni > 50 MB)
+BACKOFF = 15         # s tra retry
 
-# Mappatura mesi italiani
-ITA_MONTHS = {
-    "gennaio": 1, "febbraio": 2, "marzo": 3, "aprile": 4,
-    "maggio": 5, "giugno": 6, "luglio": 7, "agosto": 8,
-    "settembre": 9, "ottobre": 10, "novembre": 11, "dicembre": 12
-}
-
-BASE_URL_TEMPLATE = (
+BASE_TEMPLATE = (
     "https://www.senato.it/legislature/{leg}/lavori/assemblea/"
     "resoconti-elenco-cronologico?year={year}"
 )
+BASE_TEMPLATE_ATTUALE = (
+    "https://www.senato.it/lavori/assemblea/"
+    "resoconti-elenco-cronologico?year={year}"
+)
 
+HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+           "(KHTML, like Gecko) Chrome/123.0 Safari/537.36"}
 
-class SenatoPDFDownloader:
-    """Downloader robusto per i PDF del Senato"""
+DATE_RE = re.compile(
+    r"dal\s+(\d{1,2}\s+\w+\s+\d{4})(?:\s+al\s+(\d{1,2}\s+\w+\s+\d{4}))?",
+    re.IGNORECASE,
+)
+
+# ――― HTTP session ―――
+session = requests.Session()
+session.headers.update(HEADERS)
+
+# ――― Helpers (identici al tuo script) ―――
+
+def _sleep(base: float, jitter: float):
+    time.sleep(base + random.uniform(0, jitter))
+
+def _ita_date_year(s: str) -> int:
+    return int(s.split()[-1])
+
+def _extract_years(html: str) -> Optional[Tuple[int, Optional[int]]]:
+    m = DATE_RE.search(html)
+    if not m:
+        return None
+    return _ita_date_year(m.group(1)), (_ita_date_year(m.group(2)) if m.group(2) else None)
+
+# ――― Core functions (identiche al tuo script) ―――
+
+def parse_pdf_links(leg: str, year: int) -> List[str]:
+    _sleep(DELAY_HTML, JITTER_HTML)
     
-    def __init__(self):
-        self.session = requests.Session()
-        self.session.headers.update(CONFIG["headers"])
-        
-    def _sleep_with_jitter(self, base_delay: float):
-        """Sleep con jitter randomico"""
-        jitter = random.uniform(0, CONFIG["delays"]["jitter"])
-        time.sleep(base_delay + jitter)
+    # USA TEMPLATE ATTUALE se siamo nell'anno corrente, altrimenti quello storico
+    current_year = dt.datetime.now().year
+    if year == current_year:
+        url = BASE_TEMPLATE_ATTUALE.format(year=year)
+        print(f"    🔄 Usando template ATTUALE per anno {year}")
+    else:
+        url = BASE_TEMPLATE.format(leg=leg, year=year)
+        print(f"    📜 Usando template STORICO per anno {year}")
     
-    def _parse_italian_date(self, date_text: str) -> Optional[dt.date]:
-        """Converte una data italiana in oggetto date"""
-        try:
-            # Formato: "15 marzo 2024"
-            parts = date_text.strip().split()
-            if len(parts) != 3:
-                return None
-            
-            day = int(parts[0])
-            month_name = parts[1].lower()
-            year = int(parts[2])
-            
-            if month_name not in ITA_MONTHS:
-                return None
-            
-            month = ITA_MONTHS[month_name]
-            return dt.date(year, month, day)
-            
-        except (ValueError, IndexError):
-            return None
-    
-    def get_pdf_links_for_year(self, leg: str, year: int) -> List[Tuple[str, dt.date]]:
-        """Ottiene tutti i link PDF per un anno specifico"""
-        url = BASE_URL_TEMPLATE.format(leg=leg, year=year)
-        
-        for attempt in range(CONFIG["retries"]["max_attempts"]):
-            try:
-                print(f"  📡 Recupero elenco per anno {year} (tentativo {attempt + 1})...")
-                
-                response = self.session.get(url, timeout=CONFIG["timeouts"]["html"])
-                
-                if response.status_code == 404:
-                    print(f"  ℹ️  Nessun elenco trovato per l'anno {year}")
-                    return []
-                
-                response.raise_for_status()
-                self._sleep_with_jitter(CONFIG["delays"]["html"])
-                
-                soup = BeautifulSoup(response.text, "html.parser")
-                pdf_links = []
-                
-                for link in soup.select('a[href$=".pdf"]'):
-                    # Estrae la data dal testo del link
-                    date_text = link.get_text(strip=True).split("–", 1)[0].strip()
-                    parsed_date = self._parse_italian_date(date_text)
-                    
-                    if parsed_date:
-                        href = link.get("href")
-                        if href:
-                            full_url = urljoin("https://www.senato.it/", href)
-                            pdf_links.append((full_url, parsed_date))
-                
-                print(f"  📄 Trovati {len(pdf_links)} PDF per l'anno {year}")
-                return pdf_links
-                
-            except requests.exceptions.RequestException as e:
-                print(f"  ⚠️  Errore nel recupero (tentativo {attempt + 1}): {e}")
-                if attempt == CONFIG["retries"]["max_attempts"] - 1:
-                    print(f"  ❌ Fallito recupero elenco per anno {year}")
-                    return []
-                
-                # Backoff esponenziale
-                wait_time = CONFIG["retries"]["backoff_factor"] ** attempt
-                time.sleep(wait_time)
-        
+    r = session.get(url, timeout=TIMEOUT_HTML)
+    if r.status_code == 404:
         return []
-    
-    def download_pdf(self, url: str, dest_path: Path) -> bool:
-        """Scarica un singolo PDF con retry"""
-        if dest_path.exists():
-            print(f"  ✓ Già esistente: {dest_path.name}")
-            return True
-        
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
-        
-        for attempt in range(CONFIG["retries"]["max_attempts"]):
-            try:
-                print(f"  ⬇️  Scaricando: {dest_path.name} (tentativo {attempt + 1})...")
-                
-                with self.session.get(url, stream=True, timeout=CONFIG["timeouts"]["pdf"]) as response:
-                    response.raise_for_status()
-                    
-                    # Verifica che sia effettivamente un PDF
-                    content_type = response.headers.get("content-type", "").lower()
-                    if "application/pdf" not in content_type:
-                        print(f"  ⚠️  Tipo di contenuto non valido: {content_type}")
-                        return False
-                    
-                    # Scarica in file temporaneo
-                    temp_path = dest_path.with_suffix(".tmp")
-                    with open(temp_path, "wb") as f:
-                        for chunk in response.iter_content(chunk_size=8192):
-                            if chunk:
-                                f.write(chunk)
-                    
-                    # Atomicamente rinomina il file
-                    temp_path.rename(dest_path)
-                
-                print(f"  ✅ Completato: {dest_path.name}")
-                self._sleep_with_jitter(CONFIG["delays"]["pdf"])
-                return True
-                
-            except requests.exceptions.RequestException as e:
-                print(f"  ⚠️  Errore download (tentativo {attempt + 1}): {e}")
-                
-                # Pulizia file temporaneo
-                temp_path = dest_path.with_suffix(".tmp")
-                if temp_path.exists():
-                    temp_path.unlink()
-                
-                if attempt == CONFIG["retries"]["max_attempts"] - 1:
-                    print(f"  ❌ Fallito download di: {dest_path.name}")
-                    return False
-                
-                wait_time = CONFIG["retries"]["backoff_factor"] ** attempt
-                time.sleep(wait_time)
-        
-        return False
-    
-    def create_metadata_file(self, pdf_path: Path, date_obj: dt.date, leg: str) -> bool:
-        """Crea il file di metadata JSON"""
-        try:
-            metadata = {
-                "date": date_obj.isoformat(),
-                "legislatura": leg,
-                "source": "senato",
-                "document_type": "stenographic_report",
-                "institution": "senato_repubblica",
-                "language": "it",
-                "created_at": dt.datetime.now(dt.timezone.utc).isoformat()
-            }
-            
-            metadata_path = pdf_path.with_suffix(".json")
-            with open(metadata_path, "w", encoding="utf-8") as f:
-                json.dump(metadata, f, ensure_ascii=False, indent=2)
-            
-            return True
-            
-        except Exception as e:
-            print(f"  ⚠️  Errore creazione metadata: {e}")
-            return False
-    
-    def download_for_legislature(self, leg: str, start_date: dt.date, output_dir: Path) -> bool:
-        """Scarica tutti i documenti per una legislatura dalla data specificata"""
-        print(f"🏛️  Inizio download Senato - Legislatura {leg}")
-        print(f"📅 Data di partenza: {start_date.isoformat()}")
-        print(f"📁 Directory output: {output_dir}")
-        
-        current_year = dt.date.today().year
-        start_year = start_date.year
-        
-        total_downloaded = 0
-        total_errors = 0
-        
-        # Processa anni dal più recente al più vecchio
-        for year in range(current_year, start_year - 1, -1):
-            print(f"\n📅 === ANNO {year} ===")
-            
-            pdf_links = self.get_pdf_links_for_year(leg, year)
-            
-            if not pdf_links:
-                print(f"  📭 Nessun documento trovato per l'anno {year}")
-                continue
-            
-            # Ordina per data (più vecchi prima)
-            pdf_links.sort(key=lambda x: x[1])
-            
-            year_downloads = 0
-            year_errors = 0
-            
-            for url, date_obj in pdf_links:
-                # Filtra per data
-                if date_obj < start_date:
-                    continue
-                
-                # Costruisce il nome del file
-                filename = f"senato_leg{leg}_{date_obj.isoformat()}_{url.rsplit('/', 1)[1]}"
-                dest_path = output_dir / str(date_obj.year) / filename
-                
-                # Scarica il PDF
-                if self.download_pdf(url, dest_path):
-                    # Crea metadata
-                    self.create_metadata_file(dest_path, date_obj, leg)
-                    year_downloads += 1
-                    total_downloaded += 1
-                else:
-                    year_errors += 1
-                    total_errors += 1
-            
-            print(f"  📊 Anno {year}: {year_downloads} scaricati, {year_errors} errori")
-        
-        print(f"\n🏁 COMPLETATO - Totale: {total_downloaded} scaricati, {total_errors} errori")
-        return total_errors == 0
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+    return [urljoin("https://www.senato.it/", a["href"]) for a in soup.select('a[href$=".pdf"]')]
 
+def download_pdf(url: str, dest: Path, overwrite: bool = False):
+    if dest.exists() and not overwrite:
+        print(f"  ✓ Già esistente: {dest.name}")
+        return
+    
+    dest.parent.mkdir(parents=True, exist_ok=True)
+
+    for attempt in range(1, RETRIES + 1):
+        try:
+            print(f"  ⬇️  Scaricando: {dest.name} (tentativo {attempt})...")
+            with session.get(url, stream=True, timeout=TIMEOUT_PDF) as r:
+                r.raise_for_status()
+                tmp = dest.with_suffix(".part")
+                with open(tmp, "wb") as f:
+                    for chunk in r.iter_content(8192):
+                        f.write(chunk)
+                tmp.rename(dest)
+            print(f"  ✅ Completato: {dest.name}")
+            break  # ok!
+        except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:
+            if attempt == RETRIES:
+                print(f"  ❌ Fallito dopo {RETRIES} tentativi: {dest.name}")
+                raise
+            print(f"       timeout, retry {attempt}/{RETRIES} fra {BACKOFF}s …")
+            time.sleep(BACKOFF)
+    _sleep(DELAY_PDF, JITTER_PDF)
+
+def get_year_bounds(leg: str, hint: int) -> Tuple[int, Optional[int]]:
+    # USA TEMPLATE ATTUALE se siamo nell'anno corrente, altrimenti quello storico
+    current_year = dt.datetime.now().year
+    if hint == current_year:
+        url = BASE_TEMPLATE_ATTUALE.format(year=hint)
+    else:
+        url = BASE_TEMPLATE.format(leg=leg, year=hint)
+        
+    try:
+        r = session.get(url, timeout=TIMEOUT_HTML)
+        if r.status_code != 200:
+            return hint, None
+        yrs = _extract_years(r.text)
+        return yrs if yrs else (hint, None)
+    except requests.exceptions.RequestException:
+        return hint, None
+
+def create_metadata_file(pdf_path: Path, leg: str) -> bool:
+    """Crea il file di metadata JSON"""
+    try:
+        # Estrae info dal path: legislatura_XX/YYYY/filename.pdf
+        parts = pdf_path.parts
+        year = None
+        if len(parts) >= 2:
+            try:
+                year = int(parts[-2])  # Directory anno
+            except ValueError:
+                pass
+        
+        metadata = {
+            "legislatura": leg,
+            "source": "senato",
+            "document_type": "stenographic_report",
+            "institution": "senato_repubblica", 
+            "language": "it",
+            "created_at": dt.datetime.now(dt.timezone.utc).isoformat()
+        }
+        
+        if year:
+            metadata["year"] = year
+        
+        metadata_path = pdf_path.with_suffix(".json")
+        with open(metadata_path, "w", encoding="utf-8") as f:
+            json.dump(metadata, f, ensure_ascii=False, indent=2)
+        
+        return True
+        
+    except Exception as e:
+        print(f"  ⚠️  Errore metadata: {e}")
+        return False
+
+# ――― Logica principale (adattata dal tuo fetch_legislature) ―――
+
+def fetch_legislature_with_date_filter(leg: str, y_start: int, y_end_in: Optional[int], 
+                                     start_date: Optional[dt.date], output_dir: Path):
+    """Versione del tuo fetch_legislature con filtro data e output dir"""
+    
+    auto_start, auto_end = get_year_bounds(leg, y_start)
+    y_start = auto_start or y_start
+    y_end = y_end_in if y_end_in is not None else (auto_end or dt.datetime.now().year)
+
+    print(f"🏛️  Senato Legislatura {leg}: {y_start}-{y_end}")
+    
+    total_downloaded = 0
+    total_errors = 0
+
+    for yr in range(y_start, y_end + 1):
+        # Se abbiamo una data di filtro e l'anno è troppo vecchio, salta
+        if start_date and yr < start_date.year:
+            print(f"  📅 Anno {yr}: troppo vecchio, saltato")
+            continue
+            
+        links = parse_pdf_links(leg, yr)
+        if not links:
+            print(f"  📭 {yr}: nessun pdf — stop.")
+            break
+            
+        print(f"  📄 {yr}: {len(links)} pdf")
+        
+        year_downloads = 0
+        year_errors = 0
+        
+        for link in links:
+            fname = link.rsplit("/", 1)[1]
+            # Usa la STESSA struttura del tuo script: legislatura_XX/anno/file.pdf
+            path = output_dir / f"legislatura_{leg}" / str(yr) / fname
+            
+            try:
+                download_pdf(link, path)
+                # Crea metadata
+                create_metadata_file(path, leg)
+                year_downloads += 1
+                total_downloaded += 1
+            except Exception as exc:
+                print(f"    ❌ ERRORE {fname}: {exc}")
+                year_errors += 1
+                total_errors += 1
+        
+        print(f"  📊 Anno {yr}: {year_downloads} scaricati, {year_errors} errori")
+    
+    print(f"\n🏁 COMPLETATO - Totale: {total_downloaded} scaricati, {total_errors} errori")
+    return total_errors == 0
+
+# ――― Interfaccia orchestratore ―――
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Scarica resoconti stenografici del Senato",
+        description="Scarica resoconti stenografici del Senato (basato su script funzionante)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempi:
-  # Scarica tutto dalla legislatura 19 dal 2024-01-01
-  python download_senato_pdf_fixed.py --leg 19 --from 2024-01-01 --out ./downloads
-  
-  # Scarica solo dal 2023 in poi
-  python download_senato_pdf_fixed.py --leg 19 --from 2023-01-01 --out ./senato_docs
+  python download_senato_pdf.py --leg 19 --from 2024-01-01 --out ./downloads
+  python download_senato_pdf.py --leg 19 --out ./downloads
         """
     )
     
@@ -280,8 +234,7 @@ Esempi:
     
     parser.add_argument("--from", dest="from_date", 
                        type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date(),
-                       default=dt.date(1948, 1, 1),
-                       help="Data minima da cui scaricare (YYYY-MM-DD)")
+                       help="Data minima da cui scaricare (YYYY-MM-DD) - opzionale")
     
     parser.add_argument("--out", type=Path, required=True,
                        help="Cartella di output")
@@ -289,8 +242,17 @@ Esempi:
     args = parser.parse_args()
     
     try:
-        downloader = SenatoPDFDownloader()
-        success = downloader.download_for_legislature(args.leg, args.from_date, args.out)
+        # Usa la logica del tuo script: determina automaticamente gli anni
+        # ma filtra per data se fornita
+        start_year = args.from_date.year if args.from_date else 2000
+        
+        success = fetch_legislature_with_date_filter(
+            args.leg, 
+            start_year, 
+            None,  # Auto-detect end year
+            args.from_date,
+            args.out
+        )
         
         if success:
             print("\n🎉 Download completato con successo!")
@@ -308,7 +270,6 @@ Esempi:
         import traceback
         traceback.print_exc()
         sys.exit(1)
-
 
 if __name__ == "__main__":
     main()
