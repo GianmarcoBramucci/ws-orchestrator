@@ -24,7 +24,7 @@ MAX_PAGES_PDF: int          = 3                 # Max pagine PDF da leggere
 MAX_CHARS_CONTENT: int      = 4000              # Max caratteri da inviare a Gemini
 
 PROJECT_ID: str             = "progetto-analisi-sentiment" # <--- CAMBIARE
-REGION: str                 = "us-central1"
+REGION: str                 = "global"
 SERVICE_ACCOUNT_FILE: str   = "GOOGLE_CREDENTIALS.json"
 
 MODEL_ID: Final[str]        = "publishers/google/models/gemini-2.0-flash-lite"
