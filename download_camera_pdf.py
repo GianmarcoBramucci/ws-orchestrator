@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-download_camera_pdf_fixed.py - v5 "Il Definitivo"
-===================================================
+download_camera_pdf_fixed.py - v5.1 "Il Definitivo FIXED"
+==========================================================
 Sistema robusto per scaricare PDF della Camera che funziona con la struttura URL attuale.
 Non si basa più sugli elenchi mensili ma prova direttamente le sedute in sequenza.
+FIXED: Gestione path corretta per evitare concatenazioni errate.
 """
 from __future__ import annotations
 import argparse
@@ -115,8 +116,11 @@ class CameraPDFDownloader:
             return False, None
     
     def download_pdf(self, leg: str, sed_num: int, date_obj: Optional[dt.date], dest_dir: Path) -> bool:
-        """Scarica un singolo PDF"""
+        """Scarica un singolo PDF con gestione path corretta"""
         pdf_url = PDF_URL_TEMPLATE.format(leg=leg, sed=sed_num)
+        
+        # ===== FIX CRITICO: Assicura che dest_dir sia Path object =====
+        dest_dir = Path(dest_dir)  # Forza conversione a Path
         
         # Costruisce il nome del file
         if date_obj:
@@ -124,13 +128,39 @@ class CameraPDFDownloader:
         else:
             filename = f"camera_leg{leg}_sed{sed_num:04d}_unknown_date.pdf"
         
-        dest_path = dest_dir / (str(date_obj.year) if date_obj else "unknown_year") / filename
+        # ===== FIX CRITICO: Path construction sicura COME SENATO =====
+        # Struttura: legislatura_XX/anno/file.pdf (come Senato)
+        leg_subdir = f"legislatura_{leg}"
+        year_subdir = str(date_obj.year) if date_obj else "unknown_year"
+        
+        # Path joining sicuro usando l'operatore /
+        dest_path = dest_dir / leg_subdir / year_subdir / filename
+        
+        # Debug path creation
+        print(f"  📁 Path debug:")
+        print(f"    dest_dir: {dest_dir} (tipo: {type(dest_dir)})")
+        print(f"    leg_subdir: {leg_subdir}")
+        print(f"    year_subdir: {year_subdir}")
+        print(f"    filename: {filename}")
+        print(f"    dest_path finale: {dest_path}")
+        
+        # Controllo sicurezza contro concatenazioni errate
+        path_str = str(dest_path)
+        if any(problem in path_str.lower() for problem in ["downloadscamera", "camera2025"]):
+            error_msg = f"❌ PATH CAMERA MALFORMATO: {dest_path}"
+            print(error_msg)
+            return False
         
         if dest_path.exists():
             print(f"  ✓ Già esistente: {filename}")
             return True
         
-        dest_path.parent.mkdir(parents=True, exist_ok=True)
+        # Crea directory con path sicuro
+        try:
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            print(f"  ❌ Errore creazione directory {dest_path.parent}: {e}")
+            return False
         
         for attempt in range(CONFIG["retries"]["max_attempts"]):
             try:
@@ -239,7 +269,16 @@ class CameraPDFDownloader:
         """Scarica tutti i documenti per una legislatura dalla data specificata"""
         print(f"🏛️  Camera dei Deputati - Legislatura {leg}")
         print(f"📅 Data di partenza: {start_date.isoformat()}")
-        print(f"📁 Directory output: {output_dir}")
+        
+        # ===== FIX CRITICO: Normalizza output_dir =====
+        output_dir = Path(output_dir).resolve()
+        print(f"📁 Directory output: {output_dir} (tipo: {type(output_dir)})")
+        
+        # Controllo sicurezza path
+        if any(problem in str(output_dir).lower() for problem in ["downloadscamera", "camera2025"]):
+            error_msg = f"❌ OUTPUT DIR MALFORMATA: {output_dir}"
+            print(error_msg)
+            return False
         
         # Trova il range di sedute da controllare
         start_sed, end_sed = self.find_seduta_range(leg, start_date)
@@ -283,7 +322,7 @@ class CameraPDFDownloader:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Scarica resoconti stenografici della Camera dei Deputati",
+        description="Scarica resoconti stenografici della Camera dei Deputati - FIXED",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempi:
@@ -307,6 +346,10 @@ Esempi:
                        help="Cartella di output")
     
     args = parser.parse_args()
+    
+    # ===== FIX CRITICO: Normalizza args.out =====
+    args.out = Path(args.out).resolve()
+    print(f"📁 Directory output normalizzata: {args.out}")
     
     try:
         downloader = CameraPDFDownloader()

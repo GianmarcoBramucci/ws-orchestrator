@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """
-download_senato_pdf.py - v7 "Basato sul tuo script funzionante"
-===============================================================
+download_senato_pdf.py - v7.1 "Basato sul tuo script funzionante FIXED"
+========================================================================
 Mantiene ESATTAMENTE la logica del tuo scarica_senato_pdf.py funzionante,
 solo con interfaccia --leg --from --out per l'orchestratore.
+FIXED: Gestione path corretta per evitare concatenazioni errate.
 """
 from __future__ import annotations
 import argparse
@@ -87,11 +88,33 @@ def parse_pdf_links(leg: str, year: int) -> List[str]:
     return [urljoin("https://www.senato.it/", a["href"]) for a in soup.select('a[href$=".pdf"]')]
 
 def download_pdf(url: str, dest: Path, overwrite: bool = False):
+    """Download PDF con gestione path corretta"""
+    
+    # ===== FIX CRITICO: Assicura che dest sia Path object =====
+    dest = Path(dest)  # Forza conversione a Path
+    
+    # Debug path
+    print(f"  📁 Download path debug:")
+    print(f"    dest: {dest} (tipo: {type(dest)})")
+    print(f"    dest.parent: {dest.parent}")
+    
+    # Controllo sicurezza path
+    dest_str = str(dest)
+    if any(problem in dest_str.lower() for problem in ["downloadsenato", "senato2025", "legislatura19"]):
+        error_msg = f"❌ DEST PATH MALFORMATO: {dest}"
+        print(error_msg)
+        raise ValueError(error_msg)
+    
     if dest.exists() and not overwrite:
         print(f"  ✓ Già esistente: {dest.name}")
         return
     
-    dest.parent.mkdir(parents=True, exist_ok=True)
+    # Crea directory con path sicuro
+    try:
+        dest.parent.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        print(f"  ❌ Errore creazione directory {dest.parent}: {e}")
+        raise
 
     for attempt in range(1, RETRIES + 1):
         try:
@@ -131,8 +154,11 @@ def get_year_bounds(leg: str, hint: int) -> Tuple[int, Optional[int]]:
         return hint, None
 
 def create_metadata_file(pdf_path: Path, leg: str) -> bool:
-    """Crea il file di metadata JSON"""
+    """Crea il file di metadata JSON con gestione path corretta"""
     try:
+        # ===== FIX CRITICO: Assicura che pdf_path sia Path object =====
+        pdf_path = Path(pdf_path)
+        
         # Estrae info dal path: legislatura_XX/YYYY/filename.pdf
         parts = pdf_path.parts
         year = None
@@ -168,7 +194,18 @@ def create_metadata_file(pdf_path: Path, leg: str) -> bool:
 
 def fetch_legislature_with_date_filter(leg: str, y_start: int, y_end_in: Optional[int], 
                                      start_date: Optional[dt.date], output_dir: Path):
-    """Versione del tuo fetch_legislature con filtro data e output dir"""
+    """Versione del tuo fetch_legislature con filtro data e output dir FIXED"""
+    
+    # ===== FIX CRITICO: Normalizza output_dir =====
+    output_dir = Path(output_dir).resolve()
+    print(f"📁 Output dir normalizzata: {output_dir} (tipo: {type(output_dir)})")
+    
+    # Controllo sicurezza path
+    output_str = str(output_dir)
+    if any(problem in output_str.lower() for problem in ["downloadsenato", "senato2025"]):
+        error_msg = f"❌ OUTPUT DIR MALFORMATA: {output_dir}"
+        print(error_msg)
+        return False
     
     auto_start, auto_end = get_year_bounds(leg, y_start)
     y_start = auto_start or y_start
@@ -197,8 +234,29 @@ def fetch_legislature_with_date_filter(leg: str, y_start: int, y_end_in: Optiona
         
         for link in links:
             fname = link.rsplit("/", 1)[1]
+            
+            # ===== FIX CRITICO: Path construction sicura =====
             # Usa la STESSA struttura del tuo script: legislatura_XX/anno/file.pdf
-            path = output_dir / f"legislatura_{leg}" / str(yr) / fname
+            leg_subdir = f"legislatura_{leg}"
+            year_subdir = str(yr)
+            
+            # Path joining sicuro usando l'operatore /
+            path = output_dir / leg_subdir / year_subdir / fname
+            
+            # Debug path creation
+            print(f"  📁 Path debug per {fname}:")
+            print(f"    output_dir: {output_dir}")
+            print(f"    leg_subdir: {leg_subdir}")
+            print(f"    year_subdir: {year_subdir}")
+            print(f"    path finale: {path}")
+            
+            # Controllo sicurezza path finale
+            path_str = str(path)
+            if any(problem in path_str.lower() for problem in ["downloadsenato", "senato2025"]):
+                print(f"  ❌ PATH FINALE MALFORMATO: {path}")
+                year_errors += 1
+                total_errors += 1
+                continue
             
             try:
                 download_pdf(link, path)
@@ -220,7 +278,7 @@ def fetch_legislature_with_date_filter(leg: str, y_start: int, y_end_in: Optiona
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Scarica resoconti stenografici del Senato (basato su script funzionante)",
+        description="Scarica resoconti stenografici del Senato (basato su script funzionante) - FIXED",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempi:
@@ -240,6 +298,10 @@ Esempi:
                        help="Cartella di output")
     
     args = parser.parse_args()
+    
+    # ===== FIX CRITICO: Normalizza args.out =====
+    args.out = Path(args.out).resolve()
+    print(f"📁 Directory output normalizzata: {args.out}")
     
     try:
         # Usa la logica del tuo script: determina automaticamente gli anni

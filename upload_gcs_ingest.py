@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-upload_gcs_ingest.py — v6.1 Improved Format
-===========================================
-Upload che crea JSONL nel formato compatibile con il tuo sistema esistente.
-Versione migliorata con better error handling e logging.
+upload_gcs_ingest.py — v6.2 Improved Format FIXED
+=================================================
+Upload che crea batch.jsonl nel formato compatibile con il tuo sistema esistente.
+Versione migliorata con better error handling, logging e FIX per path management.
 """
 from __future__ import annotations
 import argparse
@@ -47,6 +47,9 @@ def calculate_file_hash(file_path: pathlib.Path) -> str:
 
 def create_structured_record(file_path: pathlib.Path, gcs_uri: str, metadata: Dict) -> Dict:
     """Crea un record nel formato strutturato richiesto"""
+    
+    # ===== FIX CRITICO: Assicura che file_path sia Path object =====
+    file_path = pathlib.Path(file_path)
     
     # Estrae info dal filename o metadata
     filename = file_path.stem
@@ -134,14 +137,14 @@ def create_structured_record(file_path: pathlib.Path, gcs_uri: str, metadata: Di
     
     return record
 
-def backup_existing_metadata(bucket: storage.Bucket, metadata_blob_name: str) -> Optional[str]:
-    """Crea backup del metadata esistente"""
+def backup_existing_batch(bucket: storage.Bucket, batch_blob_name: str) -> Optional[str]:
+    """Crea backup del batch esistente"""
     try:
-        metadata_blob = bucket.blob(metadata_blob_name)
-        if metadata_blob.exists():
+        batch_blob = bucket.blob(batch_blob_name)
+        if batch_blob.exists():
             timestamp = dt.datetime.now(dt.timezone.utc).strftime("%Y%m%dT%H%M%S")
-            backup_name = f"{metadata_blob_name}.{timestamp}.bak"
-            bucket.copy_blob(metadata_blob, bucket, new_name=backup_name)
+            backup_name = f"{batch_blob_name}.{timestamp}.bak"
+            bucket.copy_blob(batch_blob, bucket, new_name=backup_name)
             safe_print(f"📋 Backup creato: {backup_name}")
             return backup_name
     except Exception as e:
@@ -150,6 +153,23 @@ def backup_existing_metadata(bucket: storage.Bucket, metadata_blob_name: str) ->
 
 def upload_directory(src: pathlib.Path, bucket_name: str, prefix: str, patterns: List[str], refresh: bool):
     """Upload con formato strutturato e gestione errori migliorata"""
+    
+    # ===== FIX CRITICO: Normalizza src path =====
+    src = pathlib.Path(src).resolve()
+    safe_print(f"📁 Source normalizzata: {src} (tipo: {type(src)})")
+    
+    # Controllo sicurezza path
+    src_str = str(src)
+    problematic_patterns = [
+        "downloadscamera", "downloadsenato", "camera2025", "senato2025"
+    ]
+    
+    for pattern in problematic_patterns:
+        if pattern in src_str.lower():
+            error_msg = f"❌ SOURCE PATH MALFORMATO: '{src}' contiene '{pattern}'"
+            safe_print(error_msg)
+            safe_print("   💡 Questo indica problemi di concatenazione path!")
+            sys.exit(1)
     
     safe_print("🔧 Inizializzazione client GCS...")
     try:
@@ -211,9 +231,19 @@ def upload_directory(src: pathlib.Path, bucket_name: str, prefix: str, patterns:
     
     for data_file in tqdm(data_files, desc="Upload"):
         try:
+            # ===== FIX CRITICO: Path handling sicuro =====
+            data_file = pathlib.Path(data_file)  # Assicura Path object
+            
             relative_path = str(data_file.relative_to(src)).replace("\\", "/")
             gcs_path = f"{prefix}/{relative_path}".lstrip("/")
             gcs_uri = f"gs://{bucket_name}/{gcs_path}"
+            
+            # Debug path creation
+            safe_print(f"  📁 Path debug per {data_file.name}:")
+            safe_print(f"    data_file: {data_file}")
+            safe_print(f"    relative_path: {relative_path}")
+            safe_print(f"    gcs_path: {gcs_path}")
+            safe_print(f"    gcs_uri: {gcs_uri}")
             
             # Upload file
             blob = bucket.blob(gcs_path)
@@ -246,12 +276,12 @@ def upload_directory(src: pathlib.Path, bucket_name: str, prefix: str, patterns:
         if len(upload_errors) > 5:
             safe_print(f"   ... e altri {len(upload_errors) - 5} errori")
     
-    # Salva metadata.jsonl
-    safe_print("\n📝 Creazione metadata.jsonl...")
-    metadata_blob_name = f"{prefix}/ingest/metadata.jsonl".lstrip("/")
+    # Salva batch.jsonl
+    safe_print("\n📝 Creazione batch.jsonl...")
+    batch_blob_name = f"{prefix}/ingest/batch.jsonl".lstrip("/")
     
     # Backup se esiste
-    backup_existing_metadata(bucket, metadata_blob_name)
+    backup_existing_batch(bucket, batch_blob_name)
     
     # Scrivi nuovo file
     try:
@@ -260,13 +290,13 @@ def upload_directory(src: pathlib.Path, bucket_name: str, prefix: str, patterns:
                 tmp.write(json.dumps(record, ensure_ascii=False) + "\n")
             tmp_path = pathlib.Path(tmp.name)
         
-        metadata_blob = bucket.blob(metadata_blob_name)
-        metadata_blob.upload_from_filename(str(tmp_path), content_type="application/json")
+        batch_blob = bucket.blob(batch_blob_name)
+        batch_blob.upload_from_filename(str(tmp_path), content_type="application/json")
         
-        safe_print(f"✅ SUCCESS: metadata.jsonl caricato in gs://{bucket_name}/{metadata_blob_name}")
+        safe_print(f"✅ SUCCESS: batch.jsonl caricato in gs://{bucket_name}/{batch_blob_name}")
         
     except Exception as e:
-        safe_print(f"❌ ERRORE creazione metadata.jsonl: {e}")
+        safe_print(f"❌ ERRORE creazione batch.jsonl: {e}")
     finally:
         if 'tmp_path' in locals():
             tmp_path.unlink(missing_ok=True)
@@ -276,11 +306,11 @@ def upload_directory(src: pathlib.Path, bucket_name: str, prefix: str, patterns:
     safe_print(f"\n🎯 SUMMARY:")
     safe_print(f"   ✅ File caricati: {successful_uploads}")
     safe_print(f"   ❌ Errori: {len(upload_errors)}")
-    safe_print(f"   📊 Record metadata: {len(jsonl_records)}")
+    safe_print(f"   📊 Record batch: {len(jsonl_records)}")
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Upload strutturato per sistema di ingestione",
+        description="Upload strutturato per sistema di ingestione - FIXED (batch.jsonl)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempi:
@@ -304,6 +334,11 @@ Esempi:
                        help="Elimina tutto il contenuto esistente prima di caricare")
     
     args = parser.parse_args()
+    
+    # ===== FIX CRITICO: Normalizza args.src =====
+    args.src = pathlib.Path(args.src).resolve()
+    safe_print(f"📁 Source path normalizzata: {args.src}")
+    
     patterns_list = [p.strip() for p in args.patterns.split(',')]
     
     try:

@@ -31,7 +31,7 @@ ENV/
 .env/
 pip-wheel-metadata/
 python_env/
-
+rename_gcs_log.csv
 # PyInstaller
 *.manifest
 *.spec

@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-orchestrator.py - Sistema di Orchestrazione Universale v2.1
-============================================================
+orchestrator.py - Sistema di Orchestrazione Universale v2.2 - FIXED PATHS
+==========================================================================
 Sistema generico per scaricare, processare e caricare documenti da qualsiasi fonte.
-Versione migliorata con better error handling e logging.
+Versione con FIX per problemi di concatenazione path.
 """
 from __future__ import annotations
 import argparse
@@ -247,10 +247,40 @@ class UniversalOrchestrator:
         if not script_path.exists():
             return ProcessResult(False, f"Script downloader non trovato: {script_path}")
         
-        # Preparazione directory locale
-        local_source_path = args.out / source.get("local_output_subdir", name)
-        local_source_path.mkdir(parents=True, exist_ok=True)
-        print(f"📁 Directory locale: {local_source_path}")
+        # ===== FIX CRITICO: Preparazione directory locale SICURA =====
+        # Forza conversione a Path object per evitare concatenazioni sbagliate
+        base_dir = pathlib.Path(args.out)
+        subdir = source.get("local_output_subdir", name)
+        
+        # Debug path creation
+        print(f"📁 Creazione path locale:")
+        print(f"  📂 Base directory: '{base_dir}' (tipo: {type(base_dir)})")
+        print(f"  📂 Subdirectory: '{subdir}' (tipo: {type(subdir)})")
+        
+        # Path joining sicuro usando l'operatore /
+        local_source_path = base_dir / subdir
+        print(f"  📂 Path finale: '{local_source_path}' (tipo: {type(local_source_path)})")
+        
+        # Controllo di sicurezza contro concatenazioni errate
+        path_str = str(local_source_path)
+        problematic_patterns = [
+            "downloadscamera", "downloadsenato", "camera2025", "senato2025",
+            "legislatura19", "leg19sed"
+        ]
+        
+        for pattern in problematic_patterns:
+            if pattern in path_str.lower():
+                error_msg = f"❌ PATH MALFORMATO RILEVATO: '{local_source_path}' contiene '{pattern}'"
+                print(error_msg)
+                print(f"   💡 Questo indica concatenazione errata invece di path joining!")
+                return ProcessResult(False, error_msg)
+        
+        # Crea directory con path sicuro
+        try:
+            local_source_path.mkdir(parents=True, exist_ok=True)
+            print(f"📁 Directory confermata: {local_source_path.resolve()}")
+        except Exception as e:
+            return ProcessResult(False, f"Impossibile creare directory {local_source_path}: {e}")
         
         # Determinazione data di partenza
         start_date = self.determine_start_date(source, args.from_date)
@@ -261,7 +291,11 @@ class UniversalOrchestrator:
             
             downloader_script = source["downloader_script"]
             base_args = source.get("downloader_args", {})
-            extra_args = {"out": str(local_source_path)}
+            
+            # ===== FIX: Passa sempre path assoluto come stringa ESCAPED =====
+            # Su Windows, i backslash devono essere escaped o usar forward slash
+            path_for_cmd = str(local_source_path.resolve()).replace("\\", "/")
+            extra_args = {"out": f'"{path_for_cmd}"'}  # Quote il path
             
             if start_date:
                 extra_args["from"] = start_date.isoformat()
@@ -285,8 +319,11 @@ class UniversalOrchestrator:
             upload_script = self.config["upload"]["script"]
             patterns = ",".join(source.get("file_patterns", ["*.pdf", "*.json"]))
             
+            # ===== FIX: Usa path assoluto come stringa ESCAPED =====
+            # Su Windows, i backslash devono essere escaped o usar forward slash
+            path_for_cmd = str(local_source_path.resolve()).replace("\\", "/")
             upload_args = {
-                "src": f'"{local_source_path}"',
+                "src": f'"{path_for_cmd}"',
                 "bucket": source["bucket"],
                 "prefix": f'"{source.get("gcs_prefix", "")}"',
                 "patterns": f'"{patterns}"'
@@ -326,7 +363,7 @@ class UniversalOrchestrator:
         """Esegue l'orchestrazione completa con summary dettagliato"""
         session_start = time.time()
         
-        print("🎯 AVVIO ORCHESTRATORE UNIVERSALE v2.1")
+        print("🎯 AVVIO ORCHESTRATORE UNIVERSALE v2.2 - FIXED PATHS")
         print(f"📋 Configurazione: {self.config_path}")
         print(f"📁 Output locale: {args.out}")
         print(f"🕒 Avvio: {self.session_start.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -399,7 +436,7 @@ class UniversalOrchestrator:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Orchestratore universale per ingestione documenti v2.1",
+        description="Orchestratore universale per ingestione documenti v2.2 - FIXED",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempi:
@@ -449,6 +486,10 @@ Esempi:
                        help="File credenziali GCS (default: GOOGLE_CREDENTIALS.json)")
     
     args = parser.parse_args()
+    
+    # ===== FIX CRITICO: Forza args.out come Path object =====
+    args.out = pathlib.Path(args.out).resolve()
+    print(f"📁 Directory output normalizzata: {args.out}")
     
     try:
         orchestrator = UniversalOrchestrator(args.config, args.credentials)
