@@ -1,10 +1,12 @@
 #!/usr/bin/env python3
 """
-download_camera_pdf_fixed.py - v5.1 "Il Definitivo FIXED"
-==========================================================
-Sistema robusto per scaricare PDF della Camera che funziona con la struttura URL attuale.
-Non si basa più sugli elenchi mensili ma prova direttamente le sedute in sequenza.
-FIXED: Gestione path corretta per evitare concatenazioni errate.
+download_camera_pdf_smart.py - v6.0 "Truly Smart - No Hardcoded Bullshit"
+==========================================================================
+Downloader intelligente per Camera che ricava TUTTO dinamicamente dai siti:
+1. Testa le legislature direttamente sui server Camera
+2. Estrae date reali dai documenti 
+3. Calcola automaticamente quale legislatura serve per una data
+4. Zero hardcoding - tutto ricavato dinamicamente
 """
 from __future__ import annotations
 import argparse
@@ -15,7 +17,7 @@ import time
 import requests
 import datetime as dt
 from pathlib import Path
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict
 from urllib.parse import urljoin
 
 # Configurazione
@@ -43,13 +45,13 @@ PDF_URL_TEMPLATE = "https://documenti.camera.it/leg{leg}/resoconti/assemblea/htm
 INFO_URL_TEMPLATE = "https://documenti.camera.it/leg{leg}/resoconti/assemblea/html/sed{sed:04d}/stenografico.htm"
 
 
-class CameraPDFDownloader:
-    """Downloader robusto per i PDF della Camera dei Deputati"""
+class TrulySmartCameraPDFDownloader:
+    """Downloader completamente dinamico per i PDF della Camera dei Deputati"""
     
     def __init__(self):
         self.session = requests.Session()
         self.session.headers.update(CONFIG["headers"])
-        self.found_sedute = []
+        self.legislature_info = {}  # Cache delle info legislature ricavate dinamicamente
         
     def _sleep_with_jitter(self, base_delay: float):
         """Sleep con jitter randomico"""
@@ -65,7 +67,6 @@ class CameraPDFDownloader:
             response = self.session.get(info_url, timeout=CONFIG["timeouts"]["request"])
             if response.status_code == 200:
                 # Cerca pattern di data nel contenuto HTML
-                # Formato tipico: "giovedì 19 settembre 2024" o simili
                 date_patterns = [
                     r'(\d{1,2})\s+(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\s+(\d{4})',
                     r'(\d{4})-(\d{2})-(\d{2})',  # ISO format
@@ -102,11 +103,9 @@ class CameraPDFDownloader:
         pdf_url = PDF_URL_TEMPLATE.format(leg=leg, sed=sed_num)
         
         try:
-            # Prova prima con HEAD request per essere veloce
             response = self.session.head(pdf_url, timeout=CONFIG["timeouts"]["request"])
             
             if response.status_code == 200:
-                # Se il PDF esiste, prova a estrarre la data
                 date_obj = self._extract_date_from_info_page(leg, sed_num)
                 return True, date_obj
             
@@ -115,12 +114,137 @@ class CameraPDFDownloader:
         except requests.exceptions.RequestException:
             return False, None
     
+    def discover_legislature_range(self, leg: str) -> Dict:
+        """Scopre dinamicamente il range di una legislatura testando sedute campione"""
+        if leg in self.legislature_info:
+            return self.legislature_info[leg]
+        
+        print(f"  🔍 Scoperta dinamica legislatura {leg}...")
+        
+        info = {
+            "exists": False,
+            "earliest_date": None,
+            "latest_date": None,
+            "sample_dates": [],
+            "working_sedute": []
+        }
+        
+        # Strategia di discovery: testa sedute a intervalli crescenti
+        test_sedute = [1, 5, 10, 20, 50, 100, 200, 300, 400, 500]
+        dates_found = []
+        working_sedute = []
+        
+        for sed_num in test_sedute:
+            print(f"    🧪 Test seduta {sed_num}...")
+            exists, date_obj = self.check_seduta_exists(leg, sed_num)
+            
+            if exists:
+                working_sedute.append(sed_num)
+                if date_obj:
+                    dates_found.append(date_obj)
+                    print(f"    ✅ Seduta {sed_num}: {date_obj}")
+                else:
+                    print(f"    ✅ Seduta {sed_num}: (data non estratta)")
+            else:
+                print(f"    ❌ Seduta {sed_num}: non esiste")
+            
+            self._sleep_with_jitter(CONFIG["delays"]["between_requests"])
+        
+        if working_sedute:
+            info["exists"] = True
+            info["working_sedute"] = working_sedute
+            info["sample_dates"] = dates_found
+            
+            if dates_found:
+                info["earliest_date"] = min(dates_found)
+                info["latest_date"] = max(dates_found)
+                
+                print(f"    📊 Legislatura {leg} SCOPERTA:")
+                print(f"       🗓️  Range date: {info['earliest_date']} - {info['latest_date']}")
+                print(f"       📄 Sedute trovate: {len(working_sedute)}")
+            else:
+                print(f"    📊 Legislatura {leg} TROVATA ma senza date estraibili")
+        else:
+            print(f"    ❌ Legislatura {leg} NON ESISTE")
+        
+        self.legislature_info[leg] = info
+        return info
+    
+    def find_legislature_for_date(self, target_date: dt.date, starting_leg: str) -> str:
+        """Trova dinamicamente quale legislatura contiene una data specifica"""
+        print(f"🎯 Ricerca legislatura per data {target_date}...")
+        print(f"   📍 Punto di partenza: legislatura {starting_leg}")
+        
+        starting_leg_num = int(starting_leg)
+        
+        # Prima controlla la legislatura di partenza
+        start_info = self.discover_legislature_range(starting_leg)
+        
+        if start_info["exists"] and start_info["earliest_date"] and start_info["latest_date"]:
+            if start_info["earliest_date"] <= target_date <= start_info["latest_date"]:
+                print(f"   ✅ Data trovata nella legislatura di partenza {starting_leg}")
+                return starting_leg
+            
+            # Determina direzione di ricerca
+            if target_date < start_info["earliest_date"]:
+                print(f"   ⬅️  Data più vecchia, cerco nelle legislature precedenti")
+                search_direction = -1
+                search_range = range(starting_leg_num - 1, max(1, starting_leg_num - 10), -1)
+            else:
+                print(f"   ➡️  Data più recente, cerco nelle legislature successive")
+                search_direction = 1
+                search_range = range(starting_leg_num + 1, starting_leg_num + 10)
+        else:
+            # Se la legislatura di partenza non esiste, cerca in entrambe le direzioni
+            print(f"   🔍 Legislatura di partenza non valida, ricerca bidirezionale")
+            search_range = list(range(starting_leg_num - 5, starting_leg_num + 5))
+            search_range = [x for x in search_range if x > 0 and x != starting_leg_num]
+        
+        # Cerca nelle altre legislature
+        for leg_num in search_range:
+            leg_str = str(leg_num)
+            print(f"   🔍 Controllo legislatura {leg_str}...")
+            
+            leg_info = self.discover_legislature_range(leg_str)
+            
+            if leg_info["exists"] and leg_info["earliest_date"] and leg_info["latest_date"]:
+                if leg_info["earliest_date"] <= target_date <= leg_info["latest_date"]:
+                    print(f"   ✅ Data trovata nella legislatura {leg_str}!")
+                    return leg_str
+                else:
+                    print(f"   📅 Legislatura {leg_str}: {leg_info['earliest_date']} - {leg_info['latest_date']} (non copre {target_date})")
+            else:
+                print(f"   ❌ Legislatura {leg_str}: non valida")
+        
+        # Se non trovo nulla, uso la legislatura di partenza come fallback
+        print(f"   ⚠️  Nessuna legislatura trovata per {target_date}, uso {starting_leg} come fallback")
+        return starting_leg
+    
+    def get_full_seduta_range(self, leg: str) -> Tuple[int, int]:
+        """Determina il range completo di sedute da controllare per una legislatura"""
+        leg_info = self.legislature_info.get(leg)
+        
+        if leg_info and leg_info["working_sedute"]:
+            # Estendi il range oltre le sedute campione trovate
+            min_sed = min(leg_info["working_sedute"])
+            max_sed = max(leg_info["working_sedute"])
+            
+            # Range esteso per catturare tutto
+            start_range = max(1, min_sed - 5)
+            end_range = max_sed + 100  # Estendi molto oltre l'ultima trovata
+            
+            print(f"    📊 Range esteso per leg {leg}: sedute {start_range}-{end_range}")
+            return start_range, end_range
+        else:
+            # Fallback per legislature sconosciute
+            print(f"    ⚠️  Range fallback per leg {leg}: sedute 1-600")
+            return 1, 600
+    
     def download_pdf(self, leg: str, sed_num: int, date_obj: Optional[dt.date], dest_dir: Path) -> bool:
         """Scarica un singolo PDF con gestione path corretta"""
         pdf_url = PDF_URL_TEMPLATE.format(leg=leg, sed=sed_num)
         
-        # ===== FIX CRITICO: Assicura che dest_dir sia Path object =====
-        dest_dir = Path(dest_dir)  # Forza conversione a Path
+        dest_dir = Path(dest_dir)
         
         # Costruisce il nome del file
         if date_obj:
@@ -128,34 +252,22 @@ class CameraPDFDownloader:
         else:
             filename = f"camera_leg{leg}_sed{sed_num:04d}_unknown_date.pdf"
         
-        # ===== FIX CRITICO: Path construction sicura COME SENATO =====
-        # Struttura: legislatura_XX/anno/file.pdf (come Senato)
+        # Path construction sicura
         leg_subdir = f"legislatura_{leg}"
         year_subdir = str(date_obj.year) if date_obj else "unknown_year"
-        
-        # Path joining sicuro usando l'operatore /
         dest_path = dest_dir / leg_subdir / year_subdir / filename
-        
-        # Debug path creation
-        print(f"  📁 Path debug:")
-        print(f"    dest_dir: {dest_dir} (tipo: {type(dest_dir)})")
-        print(f"    leg_subdir: {leg_subdir}")
-        print(f"    year_subdir: {year_subdir}")
-        print(f"    filename: {filename}")
-        print(f"    dest_path finale: {dest_path}")
         
         # Controllo sicurezza contro concatenazioni errate
         path_str = str(dest_path)
         if any(problem in path_str.lower() for problem in ["downloadscamera", "camera2025"]):
-            error_msg = f"❌ PATH CAMERA MALFORMATO: {dest_path}"
-            print(error_msg)
+            print(f"❌ PATH CAMERA MALFORMATO: {dest_path}")
             return False
         
         if dest_path.exists():
             print(f"  ✓ Già esistente: {filename}")
             return True
         
-        # Crea directory con path sicuro
+        # Crea directory
         try:
             dest_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception as e:
@@ -232,66 +344,45 @@ class CameraPDFDownloader:
         except Exception as e:
             print(f"  ⚠️  Errore metadata: {e}")
     
-    def find_seduta_range(self, leg: str, start_date: dt.date) -> Tuple[int, int]:
-        """Trova il range di sedute da controllare"""
-        print(f"  🔍 Cercando range di sedute valide...")
+    def smart_download(self, requested_leg: str, start_date: Optional[dt.date], output_dir: Path) -> bool:
+        """Download intelligente completamente dinamico"""
+        print(f"🏛️  Camera dei Deputati - Download Dinamico")
+        print(f"📋 Legislatura richiesta: {requested_leg}")
+        if start_date:
+            print(f"📅 Data di partenza: {start_date.isoformat()}")
         
-        # Prova alcune sedute campione per capire il range
-        test_sedute = [1, 50, 100, 200, 300, 400, 500, 600]
-        valid_sedute = []
-        
-        for sed_num in test_sedute:
-            exists, date_obj = self.check_seduta_exists(leg, sed_num)
-            if exists:
-                valid_sedute.append((sed_num, date_obj))
-                print(f"    ✓ Seduta {sed_num} esiste {f'({date_obj})' if date_obj else ''}")
-            else:
-                print(f"    ✗ Seduta {sed_num} non esiste")
-            
-            self._sleep_with_jitter(CONFIG["delays"]["between_requests"])
-        
-        if not valid_sedute:
-            print("  ❌ Nessuna seduta trovata nel range testato")
-            return 1, 100  # Fallback
-        
-        # Determina range basato sulle sedute trovate
-        min_sed = min(s[0] for s in valid_sedute)
-        max_sed = max(s[0] for s in valid_sedute)
-        
-        # Estendi il range per essere sicuri
-        start_range = max(1, min_sed - 50)
-        end_range = max_sed + 100
-        
-        print(f"  📊 Range stimato: sedute {start_range}-{end_range}")
-        return start_range, end_range
-    
-    def download_for_legislature(self, leg: str, start_date: dt.date, output_dir: Path) -> bool:
-        """Scarica tutti i documenti per una legislatura dalla data specificata"""
-        print(f"🏛️  Camera dei Deputati - Legislatura {leg}")
-        print(f"📅 Data di partenza: {start_date.isoformat()}")
-        
-        # ===== FIX CRITICO: Normalizza output_dir =====
         output_dir = Path(output_dir).resolve()
-        print(f"📁 Directory output: {output_dir} (tipo: {type(output_dir)})")
+        print(f"📁 Directory output: {output_dir}")
         
         # Controllo sicurezza path
         if any(problem in str(output_dir).lower() for problem in ["downloadscamera", "camera2025"]):
-            error_msg = f"❌ OUTPUT DIR MALFORMATA: {output_dir}"
-            print(error_msg)
+            print(f"❌ OUTPUT DIR MALFORMATA: {output_dir}")
             return False
         
-        # Trova il range di sedute da controllare
-        start_sed, end_sed = self.find_seduta_range(leg, start_date)
+        # Trova la legislatura giusta dinamicamente
+        if start_date:
+            target_leg = self.find_legislature_for_date(start_date, requested_leg)
+        else:
+            target_leg = requested_leg
+            # Verifica comunque che esista
+            leg_info = self.discover_legislature_range(target_leg)
+            if not leg_info["exists"]:
+                print(f"❌ Legislatura {target_leg} non esiste!")
+                return False
+        
+        print(f"\n📄 Download da Legislatura {target_leg}...")
+        
+        start_sed, end_sed = self.get_full_seduta_range(target_leg)
         
         total_downloaded = 0
         total_errors = 0
         consecutive_missing = 0
-        max_consecutive_missing = 20  # Fermati dopo 20 sedute consecutive mancanti
+        max_consecutive_missing = 20
         
-        print(f"\n📄 Controllo sedute da {start_sed} a {end_sed}...")
+        print(f"📊 Controllo sedute da {start_sed} a {end_sed}...")
         
         for sed_num in range(start_sed, end_sed + 1):
-            exists, date_obj = self.check_seduta_exists(leg, sed_num)
+            exists, date_obj = self.check_seduta_exists(target_leg, sed_num)
             
             if not exists:
                 consecutive_missing += 1
@@ -300,46 +391,51 @@ class CameraPDFDownloader:
                     break
                 continue
             
-            consecutive_missing = 0  # Reset counter
+            consecutive_missing = 0
             
             # Filtra per data se disponibile
-            if date_obj and date_obj < start_date:
+            if start_date and date_obj and date_obj < start_date:
                 print(f"  ⏭️  Seduta {sed_num:04d} ({date_obj}) troppo vecchia, salto")
                 continue
             
             # Scarica il PDF
-            if self.download_pdf(leg, sed_num, date_obj, output_dir):
+            if self.download_pdf(target_leg, sed_num, date_obj, output_dir):
                 total_downloaded += 1
             else:
                 total_errors += 1
             
-            # Sleep tra richieste
             self._sleep_with_jitter(CONFIG["delays"]["between_requests"])
         
-        print(f"\n🏁 COMPLETATO - Scaricati: {total_downloaded}, Errori: {total_errors}")
+        print(f"\n🏁 DOWNLOAD DINAMICO COMPLETATO")
+        print(f"📈 Scaricati: {total_downloaded}")
+        print(f"❌ Errori: {total_errors}")
+        print(f"🏛️  Legislatura utilizzata: {target_leg}")
+        
         return total_errors == 0
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Scarica resoconti stenografici della Camera dei Deputati - FIXED",
+        description="Dynamic Camera Downloader - Discovers everything from the websites",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempi:
-  # Scarica tutto dalla legislatura 19 dal 2024-05-01
-  python download_camera_pdf_fixed.py --leg 19 --from 2024-05-01 --out ./downloads
+  # Il sistema scopre dinamicamente la legislatura giusta per la data
+  python download_camera_pdf_smart.py --leg 19 --from 2024-05-01 --out ./downloads
   
-  # Solo documenti dal 2023
-  python download_camera_pdf_fixed.py --leg 19 --from 2023-01-01 --out ./camera_docs
+  # Per date vecchie, scopre automaticamente la legislatura corretta testando i siti
+  python download_camera_pdf_smart.py --leg 19 --from 2020-01-01 --out ./downloads
+  
+  # Anche per legislature future, testa dinamicamente
+  python download_camera_pdf_smart.py --leg 25 --from 2030-01-01 --out ./downloads
         """
     )
     
     parser.add_argument("--leg", required=True,
-                       help="Numero della legislatura (es. 19)")
+                       help="Numero della legislatura richiesta (usata come punto di partenza)")
     
     parser.add_argument("--from", dest="from_date",
                        type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date(),
-                       default=dt.date(1948, 1, 1),
                        help="Data minima da cui scaricare (YYYY-MM-DD)")
     
     parser.add_argument("--out", type=Path, required=True,
@@ -347,19 +443,18 @@ Esempi:
     
     args = parser.parse_args()
     
-    # ===== FIX CRITICO: Normalizza args.out =====
     args.out = Path(args.out).resolve()
     print(f"📁 Directory output normalizzata: {args.out}")
     
     try:
-        downloader = CameraPDFDownloader()
-        success = downloader.download_for_legislature(args.leg, args.from_date, args.out)
+        downloader = TrulySmartCameraPDFDownloader()
+        success = downloader.smart_download(args.leg, args.from_date, args.out)
         
         if success:
-            print("\n🎉 Download completato con successo!")
+            print("\n🎉 Download dinamico completato con successo!")
             sys.exit(0)
         else:
-            print("\n⚠️  Download completato con alcuni errori")
+            print("\n⚠️  Download dinamico completato con alcuni errori")
             sys.exit(1)
             
     except KeyboardInterrupt:
