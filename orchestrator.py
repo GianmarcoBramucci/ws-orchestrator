@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-orchestrator.py - Sistema di Orchestrazione Universale v2.2 - FIXED PATHS
-==========================================================================
+orchestrator.py - Sistema di Orchestrazione Universale v3.0 - Multi-Legislature Edition
+=======================================================================================
 Sistema generico per scaricare, processare e caricare documenti da qualsiasi fonte.
-Versione con FIX per problemi di concatenazione path.
+Supporta multi-legislature e rename configurabile per fonte.
 """
 from __future__ import annotations
 import argparse
@@ -247,33 +247,12 @@ class UniversalOrchestrator:
         if not script_path.exists():
             return ProcessResult(False, f"Script downloader non trovato: {script_path}")
         
-        # ===== FIX CRITICO: Preparazione directory locale SICURA =====
-        # Forza conversione a Path object per evitare concatenazioni sbagliate
+        # Preparazione directory locale
         base_dir = pathlib.Path(args.out)
         subdir = source.get("local_output_subdir", name)
         
-        # Debug path creation
-        print(f"📁 Creazione path locale:")
-        print(f"  📂 Base directory: '{base_dir}' (tipo: {type(base_dir)})")
-        print(f"  📂 Subdirectory: '{subdir}' (tipo: {type(subdir)})")
-        
         # Path joining sicuro usando l'operatore /
         local_source_path = base_dir / subdir
-        print(f"  📂 Path finale: '{local_source_path}' (tipo: {type(local_source_path)})")
-        
-        # Controllo di sicurezza contro concatenazioni errate
-        path_str = str(local_source_path)
-        problematic_patterns = [
-            "downloadscamera", "downloadsenato", "camera2025", "senato2025",
-            "legislatura19", "leg19sed"
-        ]
-        
-        for pattern in problematic_patterns:
-            if pattern in path_str.lower():
-                error_msg = f"❌ PATH MALFORMATO RILEVATO: '{local_source_path}' contiene '{pattern}'"
-                print(error_msg)
-                print(f"   💡 Questo indica concatenazione errata invece di path joining!")
-                return ProcessResult(False, error_msg)
         
         # Crea directory con path sicuro
         try:
@@ -292,13 +271,15 @@ class UniversalOrchestrator:
             downloader_script = source["downloader_script"]
             base_args = source.get("downloader_args", {})
             
-            # ===== FIX: Passa sempre path assoluto come stringa ESCAPED =====
-            # Su Windows, i backslash devono essere escaped o usar forward slash
+            # Passa path assoluto come stringa
             path_for_cmd = str(local_source_path.resolve()).replace("\\", "/")
-            extra_args = {"out": f'"{path_for_cmd}"'}  # Quote il path
+            extra_args = {"out": f'"{path_for_cmd}"'}
             
             if start_date:
                 extra_args["from"] = start_date.isoformat()
+            
+            if args.to_date:
+                extra_args["to"] = args.to_date.isoformat()
             
             args_str = self.build_command_args(base_args, extra_args)
             cmd = f"python {downloader_script} {args_str}"
@@ -319,8 +300,7 @@ class UniversalOrchestrator:
             upload_script = self.config["upload"]["script"]
             patterns = ",".join(source.get("file_patterns", ["*.pdf", "*.json"]))
             
-            # ===== FIX: Usa path assoluto come stringa ESCAPED =====
-            # Su Windows, i backslash devono essere escaped o usar forward slash
+            # Usa path assoluto come stringa
             path_for_cmd = str(local_source_path.resolve()).replace("\\", "/")
             upload_args = {
                 "src": f'"{path_for_cmd}"',
@@ -342,7 +322,7 @@ class UniversalOrchestrator:
             print(f"\n⏭️  FASE 2: UPLOAD SALTATO")
         
         # FASE 3: RINOMINA
-        if not args.skip_rename:
+        if not args.skip_rename and source.get("enable_rename", False):
             print(f"\n🏷️  FASE 3: RINOMINA")
             
             rename_script = self.config["rename"]["script"]
@@ -354,7 +334,10 @@ class UniversalOrchestrator:
             if not result.success:
                 return ProcessResult(False, f"Rinomina fallita per {name}: {result.message}")
         else:
-            print(f"\n⏭️  FASE 3: RINOMINA SALTATA")
+            if args.skip_rename:
+                print(f"\n⏭️  FASE 3: RINOMINA SALTATA (--skip-rename)")
+            elif not source.get("enable_rename", False):
+                print(f"\n⏭️  FASE 3: RINOMINA DISABILITATA NEL CONFIG")
         
         print(f"\n✅ FONTE {name.upper()} COMPLETATA CON SUCCESSO")
         return ProcessResult(True, f"Fonte {name} processata con successo")
@@ -363,7 +346,7 @@ class UniversalOrchestrator:
         """Esegue l'orchestrazione completa con summary dettagliato"""
         session_start = time.time()
         
-        print("🎯 AVVIO ORCHESTRATORE UNIVERSALE v2.2 - FIXED PATHS")
+        print("🎯 AVVIO ORCHESTRATORE UNIVERSALE v3.0 - MULTI-LEGISLATURE EDITION")
         print(f"📋 Configurazione: {self.config_path}")
         print(f"📁 Output locale: {args.out}")
         print(f"🕒 Avvio: {self.session_start.strftime('%Y-%m-%d %H:%M:%S')}")
@@ -436,7 +419,7 @@ class UniversalOrchestrator:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Orchestratore universale per ingestione documenti v2.2 - FIXED",
+        description="Orchestratore universale per ingestione documenti v3.0",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempi:
@@ -451,6 +434,9 @@ Esempi:
   
   # Processa tutto continuando anche in caso di errori
   python orchestrator.py --continue-on-error
+  
+  # Range di date specifico
+  python orchestrator.py --from 2020-01-01 --to 2023-12-31
         """
     )
     
@@ -460,6 +446,10 @@ Esempi:
     parser.add_argument("--from", dest="from_date", 
                        type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date(),
                        help="Data di partenza (YYYY-MM-DD)")
+    
+    parser.add_argument("--to", dest="to_date",
+                       type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date(),
+                       help="Data di fine (YYYY-MM-DD)")
     
     parser.add_argument("--out", default="downloads", type=pathlib.Path,
                        help="Cartella locale di output (default: downloads)")
@@ -487,7 +477,7 @@ Esempi:
     
     args = parser.parse_args()
     
-    # ===== FIX CRITICO: Forza args.out come Path object =====
+    # Forza args.out come Path object
     args.out = pathlib.Path(args.out).resolve()
     print(f"📁 Directory output normalizzata: {args.out}")
     

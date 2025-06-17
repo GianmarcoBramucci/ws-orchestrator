@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-download_senato_pdf_smart.py - v8.0 "Truly Smart - No Hardcoded Bullshit"
-===========================================================================
-Downloader intelligente per Senato che ricava TUTTO dinamicamente dai siti:
-1. Usa la tua logica get_year_bounds() per estrarre range dalle pagine
-2. Testa le legislature direttamente sui server Senato
-3. Calcola automaticamente quale legislatura serve per una data
-4. Zero hardcoding - tutto ricavato dinamicamente come nei tuoi script originali
+download_senato_pdf.py - v9.0 "Super Smart Multi-Legislature"
+==============================================================
+Downloader super intelligente che:
+1. Usa la legislatura passata solo come PUNTO DI PARTENZA
+2. Scarica TUTTE le legislature necessarie per coprire il range di date
+3. Organizza tutto in cartelle separate per legislatura/anno
+4. Zero hardcoding - tutto dinamico
 """
 from __future__ import annotations
 import argparse
@@ -17,21 +17,21 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple, Dict
+from typing import List, Optional, Tuple, Dict, Set
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
 
-# ――― Config (identica al tuo script funzionante) ―――
+# Configurazione
 DELAY_HTML = 10.0    # rispetto robots.txt
 DELAY_PDF = 1.5
 JITTER_HTML = 1.5
 JITTER_PDF = 0.8
-RETRIES = 3          # tentativi per PDF
+RETRIES = 3
 TIMEOUT_HTML = 20
-TIMEOUT_PDF = 60     # read‑timeout per i PDF (alcuni > 50 MB)
-BACKOFF = 15         # s tra retry
+TIMEOUT_PDF = 60
+BACKOFF = 15
 
 BASE_TEMPLATE = (
     "https://www.senato.it/legislature/{leg}/lavori/assemblea/"
@@ -50,36 +50,36 @@ DATE_RE = re.compile(
     re.IGNORECASE,
 )
 
-# ――― HTTP session ―――
+# HTTP session
 session = requests.Session()
 session.headers.update(HEADERS)
 
 
-class TrulySmartSenatoPDFDownloader:
-    """Downloader completamente dinamico per il Senato"""
+class SuperSmartSenatoPDFDownloader:
+    """Downloader multi-legislatura super intelligente per Senato"""
     
     def __init__(self):
-        self.legislature_info = {}  # Cache delle info legislature ricavate dinamicamente
+        self.legislature_info = {}  # Cache delle info legislature
+        self.processed_files = set()  # Per evitare duplicati
     
     def _sleep(self, base: float, jitter: float):
         time.sleep(base + random.uniform(0, jitter))
 
     def _ita_date_year(self, s: str) -> int:
-        """Estrae anno da stringa data italiana (dal tuo script originale)"""
+        """Estrae anno da stringa data italiana"""
         return int(s.split()[-1])
 
     def _extract_years(self, html: str) -> Optional[Tuple[int, Optional[int]]]:
-        """Estrae range anni dalla pagina HTML (dal tuo script originale)"""
+        """Estrae range anni dalla pagina HTML"""
         m = DATE_RE.search(html)
         if not m:
             return None
         return self._ita_date_year(m.group(1)), (self._ita_date_year(m.group(2)) if m.group(2) else None)
 
     def test_legislature_year(self, leg: str, year: int) -> Tuple[bool, int, Optional[Tuple[int, Optional[int]]]]:
-        """Testa se una legislatura ha documenti per un dato anno E estrae il range"""
+        """Testa se una legislatura ha documenti per un dato anno"""
         self._sleep(DELAY_HTML, JITTER_HTML)
         
-        # USA TEMPLATE ATTUALE se siamo nell'anno corrente, altrimenti quello storico
         current_year = dt.datetime.now().year
         if year == current_year:
             url = BASE_TEMPLATE_ATTUALE.format(year=year)
@@ -93,18 +93,13 @@ class TrulySmartSenatoPDFDownloader:
             
             r.raise_for_status()
             
-            # Estrae range anni dalla pagina (tua logica originale)
             year_range = self._extract_years(r.text)
             
-            # Conta i PDF
             soup = BeautifulSoup(r.text, "html.parser")
             pdf_links = [urljoin("https://www.senato.it/", a["href"]) for a in soup.select('a[href$=".pdf"]')]
             
             doc_count = len(pdf_links)
             exists = doc_count > 0
-            
-            print(f"    📊 Leg {leg}, Anno {year}: {doc_count} documenti" + 
-                  (f", range estratto: {year_range}" if year_range else ""))
             
             return exists, doc_count, year_range
             
@@ -113,7 +108,7 @@ class TrulySmartSenatoPDFDownloader:
             return False, 0, None
 
     def discover_legislature_range(self, leg: str) -> Dict:
-        """Scopre dinamicamente il range di una legislatura usando la tua logica get_year_bounds"""
+        """Scopre dinamicamente il range di una legislatura"""
         if leg in self.legislature_info:
             return self.legislature_info[leg]
         
@@ -123,40 +118,36 @@ class TrulySmartSenatoPDFDownloader:
             "exists": False,
             "years_with_docs": [],
             "total_docs": 0,
-            "extracted_range": None,  # Range estratto dalle pagine HTML
-            "discovered_range": None  # Range scoperto testando
+            "extracted_range": None,
+            "discovered_range": None
         }
         
         current_year = dt.datetime.now().year
         
-        # Strategia: testa prima l'anno corrente per estrarre il range dalle pagine
-        print(f"    🧪 Test anno corrente {current_year} per estrarre range...")
+        # Test anno corrente per range
         exists, doc_count, year_range = self.test_legislature_year(leg, current_year)
         
         if year_range:
             info["extracted_range"] = year_range
             start_year, end_year = year_range
-            print(f"    📅 Range estratto dalle pagine: {start_year} - {end_year or 'in corso'}")
-            
-            # Testa tutti gli anni nel range estratto
+            print(f"    📅 Range estratto: {start_year} - {end_year or 'in corso'}")
             test_years = list(range(start_year, (end_year or current_year) + 1))
         else:
-            # Se non riesco a estrarre il range, uso una strategia di discovery più ampia
-            print(f"    🔍 Range non estratto, provo discovery estesa...")
-            # Testa anni attorno a una stima ragionevole
-            base_year = current_year - 2
-            test_years = list(range(base_year - 5, current_year + 2))
+            # Discovery estesa
+            print(f"    🔍 Range non estratto, discovery estesa...")
+            # Test più ampio per legislature vecchie
+            base_year = current_year - 3
+            test_years = list(range(base_year - 10, current_year + 2))
         
         years_with_docs = []
         total_docs = 0
-        
-        print(f"    🧪 Test anni: {test_years}")
         
         for year in test_years:
             exists, doc_count, _ = self.test_legislature_year(leg, year)
             if exists and doc_count > 0:
                 years_with_docs.append(year)
                 total_docs += doc_count
+                print(f"    📊 Anno {year}: {doc_count} documenti")
         
         info["years_with_docs"] = years_with_docs
         info["total_docs"] = total_docs
@@ -168,122 +159,116 @@ class TrulySmartSenatoPDFDownloader:
             
             print(f"    ✅ Legislatura {leg} SCOPERTA:")
             print(f"       📊 {total_docs} documenti in {len(years_with_docs)} anni")
-            if info["extracted_range"]:
-                print(f"       📅 Range estratto: {info['extracted_range']}")
             if info["discovered_range"]:
-                print(f"       🔍 Range scoperto: {info['discovered_range']}")
+                print(f"       🔍 Range: {info['discovered_range'][0]} - {info['discovered_range'][1]}")
         else:
             print(f"    ❌ Legislatura {leg} NON TROVATA")
         
         self.legislature_info[leg] = info
         return info
 
-    def find_legislature_for_date(self, target_date: dt.date, starting_leg: str) -> str:
-        """Trova dinamicamente quale legislatura contiene una data specifica"""
-        print(f"🎯 Ricerca legislatura per data {target_date}...")
+    def find_all_legislatures_for_range(self, start_date: dt.date, starting_leg: str, end_date: Optional[dt.date] = None) -> List[str]:
+        """Trova TUTTE le legislature necessarie per coprire un range di date"""
+        if not end_date:
+            end_date = dt.date.today()
+        
+        print(f"🎯 Ricerca TUTTE le legislature per range {start_date} - {end_date}")
         print(f"   📍 Punto di partenza: legislatura {starting_leg}")
         
         starting_leg_num = int(starting_leg)
-        target_year = target_date.year
+        target_start_year = start_date.year
+        target_end_year = end_date.year
+        legislatures_needed = []
         
-        # Prima controlla la legislatura di partenza
+        # Verifica legislatura di partenza
         start_info = self.discover_legislature_range(starting_leg)
         
         if start_info["exists"]:
-            # Usa il range estratto se disponibile, altrimenti quello scoperto
             date_range = start_info["extracted_range"] or start_info["discovered_range"]
             
             if date_range:
                 start_year, end_year = date_range
-                end_year = end_year or dt.datetime.now().year  # Se None, usa anno corrente
+                end_year = end_year or dt.datetime.now().year
                 
-                if start_year <= target_year <= end_year:
-                    print(f"   ✅ Anno target {target_year} trovato nella legislatura di partenza {starting_leg} ({start_year}-{end_year})")
-                    return starting_leg
+                # Include se copre parte del range
+                if not (end_year < target_start_year or start_year > target_end_year):
+                    legislatures_needed.append(starting_leg)
+                    print(f"   ✅ Legislatura {starting_leg} copre anni {start_year}-{end_year}")
                 
-                # Determina direzione di ricerca
-                if target_year < start_year:
-                    print(f"   ⬅️  Anno {target_year} più vecchio del range {start_year}-{end_year}, cerco nelle legislature precedenti")
-                    search_range = range(starting_leg_num - 1, max(1, starting_leg_num - 8), -1)
-                else:
-                    print(f"   ➡️  Anno {target_year} più recente del range {start_year}-{end_year}, cerco nelle legislature successive")
-                    search_range = range(starting_leg_num + 1, starting_leg_num + 8)
-            else:
-                print(f"   ⚠️  Range non determinabile per legislatura {starting_leg}")
-                search_range = list(range(starting_leg_num - 3, starting_leg_num + 3))
-                search_range = [x for x in search_range if x > 0 and x != starting_leg_num]
+                # Cerca all'indietro se necessario
+                if start_year > target_start_year:
+                    print(f"   ⬅️  Cerco legislature precedenti per coprire dal {target_start_year}...")
+                    for leg_num in range(starting_leg_num - 1, max(1, starting_leg_num - 20), -1):
+                        leg_str = str(leg_num)
+                        leg_info = self.discover_legislature_range(leg_str)
+                        
+                        if leg_info["exists"]:
+                            leg_range = leg_info["extracted_range"] or leg_info["discovered_range"]
+                            if leg_range:
+                                leg_start, leg_end = leg_range
+                                leg_end = leg_end or dt.datetime.now().year
+                                
+                                if leg_end >= target_start_year:
+                                    legislatures_needed.append(leg_str)
+                                    print(f"   ✅ Aggiungo legislatura {leg_str} ({leg_start}-{leg_end})")
+                                    
+                                    if leg_start <= target_start_year:
+                                        break
+                                elif leg_end < target_start_year:
+                                    break
+                
+                # Cerca in avanti se necessario
+                if end_year < target_end_year:
+                    print(f"   ➡️  Cerco legislature successive per coprire fino al {target_end_year}...")
+                    for leg_num in range(starting_leg_num + 1, starting_leg_num + 10):
+                        leg_str = str(leg_num)
+                        leg_info = self.discover_legislature_range(leg_str)
+                        
+                        if leg_info["exists"]:
+                            leg_range = leg_info["extracted_range"] or leg_info["discovered_range"]
+                            if leg_range:
+                                leg_start, leg_end = leg_range
+                                leg_end = leg_end or dt.datetime.now().year
+                                
+                                if leg_start <= target_end_year:
+                                    legislatures_needed.append(leg_str)
+                                    print(f"   ✅ Aggiungo legislatura {leg_str} ({leg_start}-{leg_end})")
+                                    
+                                    if leg_end >= target_end_year:
+                                        break
+                        else:
+                            break
         else:
-            # Se la legislatura di partenza non esiste, cerca in entrambe le direzioni
-            print(f"   🔍 Legislatura di partenza non valida, ricerca bidirezionale")
-            search_range = list(range(starting_leg_num - 5, starting_leg_num + 5))
-            search_range = [x for x in search_range if x > 0 and x != starting_leg_num]
-        
-        # Cerca nelle altre legislature
-        for leg_num in search_range:
-            leg_str = str(leg_num)
-            print(f"   🔍 Controllo legislatura {leg_str}...")
-            
-            leg_info = self.discover_legislature_range(leg_str)
-            
-            if leg_info["exists"]:
-                date_range = leg_info["extracted_range"] or leg_info["discovered_range"]
-                
-                if date_range:
-                    start_year, end_year = date_range
-                    end_year = end_year or dt.datetime.now().year
+            # Ricerca estesa se la legislatura di partenza non è valida
+            print(f"   🔍 Legislatura di partenza non valida, ricerca estesa...")
+            for offset in range(-15, 10):
+                leg_num = starting_leg_num + offset
+                if leg_num < 1:
+                    continue
                     
-                    if start_year <= target_year <= end_year:
-                        print(f"   ✅ Anno target {target_year} trovato nella legislatura {leg_str} ({start_year}-{end_year})!")
-                        return leg_str
-                    else:
-                        print(f"   📅 Legislatura {leg_str}: {start_year}-{end_year} (non copre {target_year})")
-                else:
-                    print(f"   ⚠️  Legislatura {leg_str}: range non determinabile")
-            else:
-                print(f"   ❌ Legislatura {leg_str}: non valida")
+                leg_str = str(leg_num)
+                leg_info = self.discover_legislature_range(leg_str)
+                
+                if leg_info["exists"]:
+                    date_range = leg_info["extracted_range"] or leg_info["discovered_range"]
+                    if date_range:
+                        start_year, end_year = date_range
+                        end_year = end_year or dt.datetime.now().year
+                        
+                        if not (end_year < target_start_year or start_year > target_end_year):
+                            legislatures_needed.append(leg_str)
+                            print(f"   ✅ Trovata legislatura {leg_str} ({start_year}-{end_year})")
         
-        # Se non trovo nulla, uso la legislatura di partenza come fallback
-        print(f"   ⚠️  Nessuna legislatura trovata per anno {target_year}, uso {starting_leg} come fallback")
-        return starting_leg
+        # Ordina le legislature
+        legislatures_needed = sorted(list(set(legislatures_needed)), key=int)
+        
+        print(f"\n📊 LEGISLATURE DA PROCESSARE: {', '.join(legislatures_needed)}")
+        return legislatures_needed
 
-    def get_year_range_for_legislature(self, leg: str, start_date: Optional[dt.date]) -> Tuple[int, Optional[int]]:
-        """Determina il range di anni da processare per una legislatura"""
-        leg_info = self.legislature_info.get(leg, self.discover_legislature_range(leg))
-        
-        if not leg_info["exists"]:
-            # Fallback intelligente basato sulla data
-            if start_date:
-                return start_date.year, dt.datetime.now().year
-            else:
-                return 2022, dt.datetime.now().year
-        
-        # Usa il range estratto se disponibile, altrimenti quello scoperto
-        date_range = leg_info["extracted_range"] or leg_info["discovered_range"]
-        
-        if date_range:
-            start_year, end_year = date_range
-            end_year = end_year or dt.datetime.now().year
-            
-            # Se abbiamo una data di start, aggiusta il range
-            if start_date:
-                start_year = min(start_year, start_date.year)
-        else:
-            # Fallback sui dati scoperti
-            if leg_info["years_with_docs"]:
-                start_year = min(leg_info["years_with_docs"])
-                end_year = max(leg_info["years_with_docs"])
-            else:
-                start_year = start_date.year if start_date else 2022
-                end_year = dt.datetime.now().year
-        
-        print(f"    📊 Range anni per leg {leg}: {start_year}-{end_year}")
-        return start_year, end_year
-
-    def parse_pdf_links(self, leg: str, year: int) -> List[str]:
-        """Parse PDF links (identica al tuo script originale)"""
+    def parse_pdf_links(self, leg: str, year: int) -> List[Tuple[str, str]]:
+        """Parse PDF links con i loro nomi"""
         self._sleep(DELAY_HTML, JITTER_HTML)
         
-        # USA TEMPLATE ATTUALE se siamo nell'anno corrente, altrimenti quello storico
         current_year = dt.datetime.now().year
         if year == current_year:
             url = BASE_TEMPLATE_ATTUALE.format(year=year)
@@ -294,78 +279,81 @@ class TrulySmartSenatoPDFDownloader:
         if r.status_code == 404:
             return []
         r.raise_for_status()
+        
         soup = BeautifulSoup(r.text, "html.parser")
-        return [urljoin("https://www.senato.it/", a["href"]) for a in soup.select('a[href$=".pdf"]')]
+        links = []
+        for a in soup.select('a[href$=".pdf"]'):
+            pdf_url = urljoin("https://www.senato.it/", a["href"])
+            filename = pdf_url.rsplit("/", 1)[1]
+            links.append((pdf_url, filename))
+        
+        return links
 
-    def download_pdf(self, url: str, dest: Path, overwrite: bool = False):
-        """Download PDF (identica al tuo script originale) con gestione path corretta"""
+    def download_pdf(self, url: str, filename: str, leg: str, year: int, dest_dir: Path) -> bool:
+        """Download PDF con gestione path multi-legislatura"""
+        # ID univoco per evitare duplicati
+        file_id = f"{leg}_{year}_{filename}"
+        if file_id in self.processed_files:
+            print(f"  ⏭️  File {filename} già processato")
+            return True
         
-        dest = Path(dest)  # Assicura Path object
+        # Path con struttura legislatura_XX/YYYY/filename (senza duplicare senato)
+        leg_subdir = f"legislatura_{leg}"
+        year_subdir = str(year)
+        dest_path = dest_dir / leg_subdir / year_subdir / filename
         
-        # Controllo sicurezza path
-        dest_str = str(dest)
-        if any(problem in dest_str.lower() for problem in ["downloadsenato", "senato2025", "legislatura19"]):
-            error_msg = f"❌ DEST PATH MALFORMATO: {dest}"
-            print(error_msg)
-            raise ValueError(error_msg)
-        
-        if dest.exists() and not overwrite:
-            print(f"  ✓ Già esistente: {dest.name}")
-            return
+        if dest_path.exists():
+            print(f"  ✓ Già esistente: {filename}")
+            self.processed_files.add(file_id)
+            return True
         
         # Crea directory
         try:
-            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest_path.parent.mkdir(parents=True, exist_ok=True)
         except Exception as e:
-            print(f"  ❌ Errore creazione directory {dest.parent}: {e}")
-            raise
+            print(f"  ❌ Errore creazione directory: {e}")
+            return False
 
         for attempt in range(1, RETRIES + 1):
             try:
-                print(f"  ⬇️  Scaricando: {dest.name} (tentativo {attempt})...")
+                print(f"  ⬇️  Scaricando: {filename} (tentativo {attempt})...")
                 with session.get(url, stream=True, timeout=TIMEOUT_PDF) as r:
                     r.raise_for_status()
-                    tmp = dest.with_suffix(".part")
+                    tmp = dest_path.with_suffix(".part")
                     with open(tmp, "wb") as f:
                         for chunk in r.iter_content(8192):
                             f.write(chunk)
-                    tmp.rename(dest)
-                print(f"  ✅ Completato: {dest.name}")
-                break  # ok!
+                    tmp.rename(dest_path)
+                print(f"  ✅ Completato: {filename}")
+                
+                # Crea metadata
+                self.create_metadata_file(dest_path, leg, year)
+                
+                self.processed_files.add(file_id)
+                break
+                
             except (requests.exceptions.ReadTimeout, requests.exceptions.ConnectionError) as e:
                 if attempt == RETRIES:
-                    print(f"  ❌ Fallito dopo {RETRIES} tentativi: {dest.name}")
-                    raise
-                print(f"       timeout, retry {attempt}/{RETRIES} fra {BACKOFF}s …")
+                    print(f"  ❌ Fallito dopo {RETRIES} tentativi: {filename}")
+                    return False
+                print(f"       timeout, retry {attempt}/{RETRIES} fra {BACKOFF}s...")
                 time.sleep(BACKOFF)
         
         self._sleep(DELAY_PDF, JITTER_PDF)
+        return True
 
-    def create_metadata_file(self, pdf_path: Path, leg: str) -> bool:
+    def create_metadata_file(self, pdf_path: Path, leg: str, year: int) -> bool:
         """Crea il file di metadata JSON"""
         try:
-            pdf_path = Path(pdf_path)
-            
-            # Estrae info dal path: legislatura_XX/YYYY/filename.pdf
-            parts = pdf_path.parts
-            year = None
-            if len(parts) >= 2:
-                try:
-                    year = int(parts[-2])  # Directory anno
-                except ValueError:
-                    pass
-            
             metadata = {
                 "legislatura": leg,
                 "source": "senato",
                 "document_type": "stenographic_report",
                 "institution": "senato_repubblica", 
                 "language": "it",
+                "year": year,
                 "created_at": dt.datetime.now(dt.timezone.utc).isoformat()
             }
-            
-            if year:
-                metadata["year"] = year
             
             metadata_path = pdf_path.with_suffix(".json")
             with open(metadata_path, "w", encoding="utf-8") as f:
@@ -377,133 +365,156 @@ class TrulySmartSenatoPDFDownloader:
             print(f"  ⚠️  Errore metadata: {e}")
             return False
 
-    def smart_download(self, requested_leg: str, start_date: Optional[dt.date], output_dir: Path) -> bool:
-        """Smart download completamente dinamico"""
-        print(f"🏛️  Senato Repubblica - Download Dinamico")
-        print(f"📋 Legislatura richiesta: {requested_leg}")
-        if start_date:
-            print(f"📅 Data di partenza: {start_date.isoformat()}")
+    def download_legislature(self, leg: str, start_date: Optional[dt.date], end_date: Optional[dt.date], output_dir: Path) -> Tuple[int, int]:
+        """Scarica una singola legislatura nel range di date specificato"""
+        print(f"\n📄 Processing Legislatura {leg}...")
         
-        output_dir = Path(output_dir).resolve()
-        print(f"📁 Directory output: {output_dir}")
+        leg_info = self.legislature_info.get(leg, self.discover_legislature_range(leg))
         
-        # Controllo sicurezza path
-        if any(problem in str(output_dir).lower() for problem in ["downloadsenato", "senato2025"]):
-            print(f"❌ OUTPUT DIR MALFORMATA: {output_dir}")
-            return False
+        if not leg_info["exists"]:
+            print(f"  ❌ Legislatura {leg} non trovata")
+            return 0, 0
         
-        # Trova la legislatura giusta dinamicamente
-        if start_date:
-            target_leg = self.find_legislature_for_date(start_date, requested_leg)
+        # Determina range anni
+        date_range = leg_info["extracted_range"] or leg_info["discovered_range"]
+        if date_range:
+            y_start, y_end = date_range
+            y_end = y_end or dt.datetime.now().year
         else:
-            target_leg = requested_leg
-            # Verifica comunque che esista
-            leg_info = self.discover_legislature_range(target_leg)
-            if not leg_info["exists"]:
-                print(f"❌ Legislatura {target_leg} non esiste!")
-                return False
+            # Fallback
+            y_start = start_date.year if start_date else 2020
+            y_end = end_date.year if end_date else dt.datetime.now().year
         
-        print(f"\n📄 Download da Legislatura {target_leg}...")
+        # Applica filtri date se specificati
+        if start_date:
+            y_start = max(y_start, start_date.year)
+        if end_date:
+            y_end = min(y_end, end_date.year)
         
-        # Determina range anni per questa legislatura
-        y_start, y_end = self.get_year_range_for_legislature(target_leg, start_date)
+        print(f"  📊 Range anni da processare: {y_start} - {y_end}")
         
         total_downloaded = 0
         total_errors = 0
         
-        for yr in range(y_start, (y_end or dt.datetime.now().year) + 1):
-            # Se abbiamo una data di filtro e l'anno è troppo vecchio, salta
-            if start_date and yr < start_date.year:
-                print(f"    📅 Anno {yr}: troppo vecchio, saltato")
-                continue
-                
-            links = self.parse_pdf_links(target_leg, yr)
+        for year in range(y_start, y_end + 1):
+            links = self.parse_pdf_links(leg, year)
             if not links:
-                print(f"    📭 {yr}: nessun pdf")
+                print(f"    📭 Anno {year}: nessun pdf")
                 continue
                 
-            print(f"    📄 {yr}: {len(links)} pdf")
+            print(f"    📄 Anno {year}: {len(links)} pdf")
             
             year_downloads = 0
             year_errors = 0
             
-            for link in links:
-                fname = link.rsplit("/", 1)[1]
-                
-                # Path construction sicura (identica al tuo script)
-                leg_subdir = f"legislatura_{target_leg}"
-                year_subdir = str(yr)
-                path = output_dir / leg_subdir / year_subdir / fname
-                
-                # Controllo sicurezza path finale
-                path_str = str(path)
-                if any(problem in path_str.lower() for problem in ["downloadsenato", "senato2025"]):
-                    print(f"      ❌ PATH FINALE MALFORMATO: {path}")
-                    year_errors += 1
-                    continue
-                
+            for url, filename in links:
                 try:
-                    self.download_pdf(link, path)
-                    # Crea metadata
-                    self.create_metadata_file(path, target_leg)
-                    year_downloads += 1
-                    total_downloaded += 1
-                except Exception as exc:
-                    print(f"      ❌ ERRORE {fname}: {exc}")
+                    if self.download_pdf(url, filename, leg, year, output_dir):
+                        year_downloads += 1
+                        total_downloaded += 1
+                    else:
+                        year_errors += 1
+                        total_errors += 1
+                except Exception as e:
+                    print(f"      ❌ ERRORE {filename}: {e}")
                     year_errors += 1
                     total_errors += 1
             
-            print(f"      📊 Anno {yr}: {year_downloads} scaricati, {year_errors} errori")
+            print(f"      📊 Anno {year}: {year_downloads} scaricati, {year_errors} errori")
         
-        print(f"\n🏁 DOWNLOAD DINAMICO COMPLETATO")
+        print(f"  📊 Legislatura {leg} completata: {total_downloaded} scaricati, {total_errors} errori")
+        return total_downloaded, total_errors
+
+    def smart_multi_legislature_download(self, requested_leg: str, start_date: Optional[dt.date], end_date: Optional[dt.date], output_dir: Path) -> bool:
+        """Download super intelligente multi-legislatura"""
+        print(f"🏛️  SENATO DELLA REPUBBLICA - DOWNLOAD MULTI-LEGISLATURA")
+        print(f"📋 Legislatura di partenza: {requested_leg}")
+        print(f"📅 Range date: {start_date.isoformat() if start_date else 'inizio'} - {end_date.isoformat() if end_date else 'oggi'}")
+        
+        output_dir = Path(output_dir).resolve()
+        print(f"📁 Directory output: {output_dir}")
+        
+        # Trova TUTTE le legislature necessarie
+        if start_date:
+            legislatures = self.find_all_legislatures_for_range(start_date, requested_leg, end_date)
+        else:
+            # Se non c'è data di inizio, usa solo la legislatura richiesta
+            legislatures = [requested_leg]
+        
+        if not legislatures:
+            print("❌ Nessuna legislatura trovata per il range specificato")
+            return False
+        
+        # Download di ogni legislatura
+        total_downloaded = 0
+        total_errors = 0
+        
+        for i, leg in enumerate(legislatures, 1):
+            print(f"\n{'='*60}")
+            print(f"LEGISLATURA {i}/{len(legislatures)}: {leg}")
+            print(f"{'='*60}")
+            
+            downloaded, errors = self.download_legislature(leg, start_date, end_date, output_dir)
+            total_downloaded += downloaded
+            total_errors += errors
+        
+        print(f"\n{'='*60}")
+        print(f"🏁 DOWNLOAD MULTI-LEGISLATURA COMPLETATO")
         print(f"📈 Totale scaricati: {total_downloaded}")
         print(f"❌ Totale errori: {total_errors}")
-        print(f"🏛️  Legislatura utilizzata: {target_leg}")
+        print(f"🏛️  Legislature processate: {', '.join(legislatures)}")
+        print(f"{'='*60}")
         
         return total_errors == 0
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Dynamic Senato Downloader - Discovers everything from the websites",
+        description="Super Smart Multi-Legislature Senato Downloader",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempi:
-  # Il sistema scopre dinamicamente la legislatura giusta per la data
-  python download_senato_pdf_smart.py --leg 19 --from 2024-01-01 --out ./downloads
+  # Scarica TUTTE le legislature dal 2010 ad oggi (partendo dalla 19)
+  python download_senato_pdf.py --leg 19 --from 2010-01-01 --out ./downloads
   
-  # Per date vecchie, scopre automaticamente la legislatura corretta testando i siti
-  python download_senato_pdf_smart.py --leg 19 --from 2018-01-01 --out ./downloads
+  # Scarica un range specifico di date attraverso più legislature
+  python download_senato_pdf.py --leg 18 --from 2015-01-01 --to 2020-12-31 --out ./downloads
   
-  # Anche per legislature future, testa dinamicamente
-  python download_senato_pdf_smart.py --leg 25 --from 2030-01-01 --out ./downloads
+  # Scarica solo la legislatura specificata (senza date)
+  python download_senato_pdf.py --leg 19 --out ./downloads
         """
     )
     
     parser.add_argument("--leg", required=True, 
-                       help="Numero della legislatura richiesta (usata come punto di partenza)")
+                       help="Legislatura di PARTENZA (il sistema trova automaticamente le altre)")
     
     parser.add_argument("--from", dest="from_date", 
                        type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date(),
-                       help="Data minima da cui scaricare (YYYY-MM-DD)")
+                       help="Data iniziale (YYYY-MM-DD)")
+    
+    parser.add_argument("--to", dest="to_date",
+                       type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date(),
+                       help="Data finale (YYYY-MM-DD) - default: oggi")
     
     parser.add_argument("--out", type=Path, required=True,
                        help="Cartella di output")
     
     args = parser.parse_args()
     
-    args.out = Path(args.out).resolve()
-    print(f"📁 Directory output normalizzata: {args.out}")
-    
     try:
-        downloader = TrulySmartSenatoPDFDownloader()
-        success = downloader.smart_download(args.leg, args.from_date, args.out)
+        downloader = SuperSmartSenatoPDFDownloader()
+        success = downloader.smart_multi_legislature_download(
+            args.leg,
+            args.from_date,
+            args.to_date,
+            args.out
+        )
         
         if success:
-            print("\n🎉 Download dinamico completato con successo!")
+            print("\n🎉 Download multi-legislatura completato con successo!")
             sys.exit(0)
         else:
-            print("\n⚠️  Download dinamico completato con alcuni errori")
+            print("\n⚠️  Download completato con alcuni errori")
             sys.exit(1)
             
     except KeyboardInterrupt:
