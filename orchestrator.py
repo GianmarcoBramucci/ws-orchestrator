@@ -16,6 +16,7 @@ import json
 import io
 import traceback
 import time
+import platform
 from typing import Dict, List, Optional, Any
 from dataclasses import dataclass
 
@@ -144,7 +145,7 @@ class UniversalOrchestrator:
             return None
     
     def run_command(self, cmd: str, source_name: str = "", timeout: int = 3600) -> ProcessResult:
-        """Esegue un comando con timeout e logging migliorato"""
+        """Esegue un comando con timeout e logging migliorato - Windows compatible"""
         display_name = f" [{source_name}]" if source_name else ""
         
         print(f"\n┏━━━ COMANDO{display_name} ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
@@ -154,14 +155,28 @@ class UniversalOrchestrator:
         start_time = time.time()
         
         try:
-            process = subprocess.Popen(
-                shlex.split(cmd),
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True,
-                encoding='utf-8',
-                errors='replace'
-            )
+            # Fix per Windows - gestione diversa dei comandi
+            if platform.system() == "Windows":
+                # Su Windows non usare shlex.split e usa shell=True
+                process = subprocess.Popen(
+                    cmd,
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace',
+                    shell=True
+                )
+            else:
+                # Su Linux/Mac usa shlex.split normale
+                process = subprocess.Popen(
+                    shlex.split(cmd),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.STDOUT,
+                    text=True,
+                    encoding='utf-8',
+                    errors='replace'
+                )
             
             output_lines = []
             if process.stdout:
@@ -271,7 +286,7 @@ class UniversalOrchestrator:
             downloader_script = source["downloader_script"]
             base_args = source.get("downloader_args", {})
             
-            # Passa path assoluto come stringa
+            # Passa path assoluto come stringa - Fix per Windows
             path_for_cmd = str(local_source_path.resolve()).replace("\\", "/")
             extra_args = {"out": f'"{path_for_cmd}"'}
             
@@ -282,7 +297,12 @@ class UniversalOrchestrator:
                 extra_args["to"] = args.to_date.isoformat()
             
             args_str = self.build_command_args(base_args, extra_args)
-            cmd = f"python {downloader_script} {args_str}"
+            
+            # Fix per Windows - path assoluti e quote
+            script_abs_path = pathlib.Path(downloader_script).resolve()
+            python_exe = sys.executable
+            
+            cmd = f'"{python_exe}" "{script_abs_path}" {args_str}'
             
             # Timeout personalizzato per download
             timeout = self.config.get("global_settings", {}).get("default_timeout_seconds", 3600)
@@ -313,7 +333,11 @@ class UniversalOrchestrator:
                 upload_args["refresh"] = ""
             
             args_str = self.build_command_args(upload_args, {})
-            cmd = f"python {upload_script} {args_str}"
+            
+            # Fix per Windows
+            script_abs_path = pathlib.Path(upload_script).resolve()
+            python_exe = sys.executable
+            cmd = f'"{python_exe}" "{script_abs_path}" {args_str}'
             
             result = self.run_command(cmd, name)
             if not result.success:
@@ -328,7 +352,10 @@ class UniversalOrchestrator:
             rename_script = self.config["rename"]["script"]
             gcs_input_uri = f"gs://{source['bucket']}/{source.get('gcs_prefix', '')}"
             
-            cmd = f"python {rename_script} --gcs-input {gcs_input_uri}"
+            # Fix per Windows
+            script_abs_path = pathlib.Path(rename_script).resolve()
+            python_exe = sys.executable
+            cmd = f'"{python_exe}" "{script_abs_path}" --gcs-input {gcs_input_uri}'
             
             result = self.run_command(cmd, name)
             if not result.success:
@@ -349,6 +376,7 @@ class UniversalOrchestrator:
         print("🎯 AVVIO ORCHESTRATORE UNIVERSALE v3.0 - MULTI-LEGISLATURE EDITION")
         print(f"📋 Configurazione: {self.config_path}")
         print(f"📁 Output locale: {args.out}")
+        print(f"🖥️  Sistema: {platform.system()}")
         print(f"🕒 Avvio: {self.session_start.strftime('%Y-%m-%d %H:%M:%S')}")
         
         # Filtra le fonti abilitate
