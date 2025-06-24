@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """
-download_camera_pdf.py - v7.0 "Super Smart Multi-Legislature"
-==============================================================
+download_camera_pdf.py - v7.1 "Super Smart Multi-Legislature - No Years Structure"
+====================================================================================
 Downloader super intelligente che:
 1. Usa la legislatura passata solo come PUNTO DI PARTENZA
 2. Scarica TUTTE le legislature necessarie per coprire il range di date
-3. Organizza tutto in cartelle separate per legislatura/anno
-4. Zero hardcoding - tutto dinamico
+3. Organizza tutto in cartelle semplici per legislatura (SENZA anni)
+4. Lascia al rename script il controllo delle date nei metadata
 """
 from __future__ import annotations
 import argparse
@@ -252,7 +252,7 @@ class SuperSmartCameraPDFDownloader:
         return legislatures_needed
     
     def download_pdf(self, leg: str, sed_num: int, date_obj: Optional[dt.date], dest_dir: Path) -> bool:
-        """Scarica un singolo PDF"""
+        """Scarica un singolo PDF - SENZA struttura anni"""
         # Crea un ID univoco per evitare duplicati tra legislature
         seduta_id = f"{leg}_{sed_num}"
         if seduta_id in self.processed_sedute:
@@ -267,10 +267,9 @@ class SuperSmartCameraPDFDownloader:
         else:
             filename = f"camera_leg{leg}_sed{sed_num:04d}_unknown_date.pdf"
         
-        # Path con struttura legislatura_XX/YYYY/filename.pdf (senza duplicare camera)
+        # 🔥 NUOVO: Path semplice - solo legislatura_XX/filename.pdf
         leg_subdir = f"legislatura_{leg}"
-        year_subdir = str(date_obj.year) if date_obj else "unknown_year"
-        dest_path = dest_dir / leg_subdir / year_subdir / filename
+        dest_path = dest_dir / leg_subdir / filename
         
         if dest_path.exists():
             print(f"  ✓ Già esistente: {filename}")
@@ -309,7 +308,7 @@ class SuperSmartCameraPDFDownloader:
                 
                 print(f"  ✅ Completato: {filename}")
                 
-                # Crea metadata JSON
+                # Crea metadata JSON (data sarà corretta dal rename se attivo)
                 self._create_metadata(dest_path, leg, sed_num, date_obj)
                 
                 self.processed_sedute.add(seduta_id)
@@ -333,7 +332,7 @@ class SuperSmartCameraPDFDownloader:
         return False
     
     def _create_metadata(self, pdf_path: Path, leg: str, sed_num: int, date_obj: Optional[dt.date]):
-        """Crea il file metadata JSON"""
+        """Crea il file metadata JSON - Semplice, il batch.jsonl sarà corretto dal rename se attivo"""
         try:
             metadata = {
                 "legislatura": leg,
@@ -408,7 +407,7 @@ class SuperSmartCameraPDFDownloader:
     
     def smart_multi_legislature_download(self, requested_leg: str, start_date: Optional[dt.date], end_date: Optional[dt.date], output_dir: Path) -> bool:
         """Download super intelligente multi-legislatura"""
-        print(f"🏛️  CAMERA DEI DEPUTATI - DOWNLOAD MULTI-LEGISLATURA")
+        print(f"🏛️  CAMERA DEI DEPUTATI - DOWNLOAD MULTI-LEGISLATURA (NO YEARS)")
         print(f"📋 Legislatura di partenza: {requested_leg}")
         print(f"📅 Range date: {start_date.isoformat() if start_date else 'inizio'} - {end_date.isoformat() if end_date else 'oggi'}")
         
@@ -451,7 +450,7 @@ class SuperSmartCameraPDFDownloader:
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Super Smart Multi-Legislature Camera Downloader",
+        description="Super Smart Multi-Legislature Camera Downloader - No Years Structure",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempi:
