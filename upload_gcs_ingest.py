@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """
-upload_gcs_ingest.py — v6.2 Improved Format FIXED
-=================================================
+upload_gcs_ingest.py — v6.3 SHA-256 HASH UPGRADE
+================================================
 Upload che crea batch.jsonl nel formato compatibile con il tuo sistema esistente.
-Versione migliorata con better error handling, logging e FIX per path management.
+Versione migliorata con better error handling, logging e SHA-256 hash per sicurezza.
 """
 from __future__ import annotations
 import argparse
@@ -24,7 +24,31 @@ except ImportError as e:
     print("🔧 Installa con: pip install -r requirements.txt")
     sys.exit(1)
 
-CREDENTIALS_FILE = "GOOGLE_CREDENTIALS.json"
+# ───────────────────────────── CONFIG
+CREDENTIALS_FILE: str = "GOOGLE_CREDENTIALS.json"
+CONFIG_FILE: str = "config.json"
+MAX_WORKERS: int = 16
+HASH_ALGORITHM: str = "SHA-256"
+
+# Base MIME types mapping (fallback universale)
+MIME_TYPE_MAPPING = {
+    "pdf": "application/pdf",
+    "txt": "text/plain", 
+    "xml": "application/xml",
+    "json": "application/json",
+    "html": "text/html",
+    "md": "text/markdown"
+}
+# ───────────────────────────── END CONFIG
+
+def load_config() -> Dict:
+    """Carica configurazione da config.json"""
+    try:
+        with open(CONFIG_FILE, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception as e:
+        print(f"❌ Errore caricamento config da {CONFIG_FILE}: {e}")
+        sys.exit(1)
 
 def safe_print(msg: str):
     """Print sicuro per Windows e Unicode"""
@@ -35,17 +59,50 @@ def safe_print(msg: str):
         print(ascii_msg)
 
 def calculate_file_hash(file_path: pathlib.Path) -> str:
-    """Calcola hash MD5 del file"""
+    """Calcola hash SHA-256 del file per maggiore sicurezza"""
     try:
-        hash_md5 = hashlib.md5()
+        hash_sha256 = hashlib.sha256()
         with open(file_path, "rb") as f:
             for chunk in iter(lambda: f.read(4096), b""):
-                hash_md5.update(chunk)
-        return hash_md5.hexdigest()
+                hash_sha256.update(chunk)
+        return hash_sha256.hexdigest()
     except Exception:
         return "unknown"
 
-def create_structured_record(file_path: pathlib.Path, gcs_uri: str, metadata: Dict) -> Dict:
+def get_mime_type_for_source(file_path: pathlib.Path, source_name: str, config: Dict) -> str:
+    """Determina MIME type basandosi sui file_patterns della source nel config"""
+    
+    # Trova la source nel config
+    sources = config.get("sources", [])
+    source_config = None
+    for source in sources:
+        if source.get("name") == source_name:
+            source_config = source
+            break
+    
+    if not source_config:
+        # Fallback se source non trovata
+        extension = file_path.suffix.lower().lstrip('.')
+        return MIME_TYPE_MAPPING.get(extension, 'application/octet-stream')
+    
+    # Prendi file_patterns dal config della source
+    file_patterns = source_config.get("file_patterns", [])
+    file_extension = file_path.suffix.lower()  # es: ".pdf"
+    
+    # Controlla se l'estensione è supportata dai patterns
+    for pattern in file_patterns:
+        # pattern è tipo "*.pdf", "*.json"
+        pattern_ext = pattern.replace("*", "")  # ".pdf", ".json"
+        if file_extension == pattern_ext:
+            # Converti estensione in MIME type
+            clean_ext = pattern_ext.lstrip('.')  # "pdf", "json"
+            return MIME_TYPE_MAPPING.get(clean_ext, 'application/octet-stream')
+    
+    # Fallback se estensione non matchata
+    extension = file_path.suffix.lower().lstrip('.')
+    return MIME_TYPE_MAPPING.get(extension, 'application/octet-stream')
+
+def create_structured_record(file_path: pathlib.Path, gcs_uri: str, metadata: Dict, config: Dict) -> Dict:
     """Crea un record nel formato strutturato richiesto"""
     
     # ===== FIX CRITICO: Assicura che file_path sia Path object =====
@@ -54,7 +111,7 @@ def create_structured_record(file_path: pathlib.Path, gcs_uri: str, metadata: Di
     # Estrae info dal filename o metadata
     filename = file_path.stem
     
-    # Determina ID univoco migliorato
+    # Determina ID univoco migliorato - ORA CON SHA-256
     if 'legislatura' in metadata and 'seduta' in metadata:
         record_id = f"{metadata.get('source', 'doc')}_leg{metadata['legislatura']}_sed{metadata.get('seduta', '0000')}"
         if 'date' in metadata:
@@ -63,34 +120,35 @@ def create_structured_record(file_path: pathlib.Path, gcs_uri: str, metadata: Di
         # Fallback per documenti senza seduta ma con data
         record_id = f"{metadata.get('source', 'doc')}_leg{metadata['legislatura']}_{metadata['date']}"
     else:
-        # Fallback: usa hash del filename per unicità
-        filename_hash = hashlib.md5(filename.encode()).hexdigest()[:8]
+        # Fallback: usa hash SHA-256 del filename per unicità (primi 12 caratteri)
+        filename_hash = hashlib.sha256(filename.encode('utf-8')).hexdigest()[:12]
         record_id = f"{metadata.get('source', 'doc')}_{filename_hash}"
     
-    # Determina mimeType
-    mime_types = {
-        '.pdf': 'application/pdf',
-        '.txt': 'text/plain',
-        '.xml': 'application/xml',
-        '.json': 'application/json',
-        '.html': 'text/html',
-        '.md': 'text/markdown'
-    }
-    mime_type = mime_types.get(file_path.suffix.lower(), 'application/octet-stream')
+    # Determina mimeType DAI FILE_PATTERNS DEL CONFIG!
+    source_name = metadata.get('source', 'unknown')
+    mime_type = get_mime_type_for_source(file_path, source_name, config)
     
-    # Determina sourceType migliorato
-    source_types = {
-        'camera': 'parliamentary_records_camera',
-        'senato': 'parliamentary_records_senato'
-    }
-    source_type = source_types.get(metadata.get('source', 'unknown'), 'parliamentary_records')
+    # Inferisci source type e title dal campo 'source' che viene dal config name!
+    source_key = metadata.get('source', 'unknown')
+    
+    # Source type inference dal name del config
+    if source_key == 'camera':
+        source_type = 'parliamentary_records_camera'
+        title_prefix = 'Camera dei Deputati'
+    elif source_key == 'senato':
+        source_type = 'parliamentary_records_senato'
+        title_prefix = 'Senato della Repubblica'
+    elif 'youtube' in source_key:
+        source_type = 'video_transcripts'
+        title_prefix = 'YouTube'
+    else:
+        source_type = 'parliamentary_records'
+        title_prefix = None
     
     # Costruisce title intelligente
     title_parts = []
-    if metadata.get('source') == 'camera':
-        title_parts.append('Camera dei Deputati')
-    elif metadata.get('source') == 'senato':
-        title_parts.append('Senato della Repubblica')
+    if title_prefix:
+        title_parts.append(title_prefix)
     
     if metadata.get('document_type'):
         doc_type = metadata['document_type'].replace('_', ' ').title()
@@ -113,11 +171,11 @@ def create_structured_record(file_path: pathlib.Path, gcs_uri: str, metadata: Di
     
     title = ' - '.join(title_parts) if title_parts else filename
     
-    # Calcola file size e hash
+    # Calcola file size e hash SHA-256
     file_size = file_path.stat().st_size if file_path.exists() else 0
     file_hash = calculate_file_hash(file_path) if file_path.exists() else "unknown"
     
-    # Struttura finale migliorata
+    # Struttura finale migliorata con SHA-256
     record = {
         "id": record_id,
         "content": {
@@ -129,7 +187,8 @@ def create_structured_record(file_path: pathlib.Path, gcs_uri: str, metadata: Di
             "title": title,
             "language": metadata.get('language', 'it'),
             "fileSize": file_size,
-            "fileHash": file_hash,
+            "fileHash": file_hash,  # 🔒 Ora usa SHA-256
+            "hashAlgorithm": HASH_ALGORITHM,  # 🆕 Dal CONFIG
             "uploadedAt": dt.datetime.now(dt.timezone.utc).isoformat(),
             **{k: v for k, v in metadata.items() if k not in ['source', 'document_type', 'language']}
         }
@@ -154,9 +213,16 @@ def backup_existing_batch(bucket: storage.Bucket, batch_blob_name: str) -> Optio
 def upload_directory(src: pathlib.Path, bucket_name: str, prefix: str, patterns: List[str], refresh: bool):
     """Upload con formato strutturato e gestione errori migliorata"""
     
+    # Carica config SOLO per credenziali
+    config = load_config()
+    credentials_file = config.get("global_settings", {}).get("credentials_file", CREDENTIALS_FILE)
+    
     # ===== FIX CRITICO: Normalizza src path =====
     src = pathlib.Path(src).resolve()
     safe_print(f"📁 Source normalizzata: {src} (tipo: {type(src)})")
+    safe_print(f"🔧 Config caricato da: {CONFIG_FILE}")
+    safe_print(f"🔑 Credenziali da: {credentials_file}")
+    safe_print(f"👥 Max workers: {MAX_WORKERS}")
     
     # Controllo sicurezza path
     src_str = str(src)
@@ -172,10 +238,12 @@ def upload_directory(src: pathlib.Path, bucket_name: str, prefix: str, patterns:
             sys.exit(1)
     
     safe_print("🔧 Inizializzazione client GCS...")
+    safe_print(f"🔒 Utilizzando hash {HASH_ALGORITHM} per integrità file")
+    
     try:
-        if pathlib.Path(CREDENTIALS_FILE).exists():
-            client = storage.Client.from_service_account_json(CREDENTIALS_FILE)
-            safe_print(f"🔑 Usando credenziali da: {CREDENTIALS_FILE}")
+        if pathlib.Path(credentials_file).exists():
+            client = storage.Client.from_service_account_json(credentials_file)
+            safe_print(f"🔑 Usando credenziali da: {credentials_file}")
         else:
             client = storage.Client()
             safe_print("🔑 Usando credenziali di default")
@@ -224,7 +292,7 @@ def upload_directory(src: pathlib.Path, bucket_name: str, prefix: str, patterns:
         safe_print("❌ Nessun file da caricare trovato")
         return
     
-    safe_print(f"📤 Upload di {len(data_files)} file...")
+    safe_print(f"📤 Upload di {len(data_files)} file con hash SHA-256...")
     
     jsonl_records: List[Dict] = []
     upload_errors = []
@@ -237,13 +305,6 @@ def upload_directory(src: pathlib.Path, bucket_name: str, prefix: str, patterns:
             relative_path = str(data_file.relative_to(src)).replace("\\", "/")
             gcs_path = f"{prefix}/{relative_path}".lstrip("/")
             gcs_uri = f"gs://{bucket_name}/{gcs_path}"
-            
-            # Debug path creation
-            safe_print(f"  📁 Path debug per {data_file.name}:")
-            safe_print(f"    data_file: {data_file}")
-            safe_print(f"    relative_path: {relative_path}")
-            safe_print(f"    gcs_path: {gcs_path}")
-            safe_print(f"    gcs_uri: {gcs_uri}")
             
             # Upload file
             blob = bucket.blob(gcs_path)
@@ -259,8 +320,8 @@ def upload_directory(src: pathlib.Path, bucket_name: str, prefix: str, patterns:
                 except Exception as e:
                     safe_print(f"⚠️  Errore lettura metadata {sidecar_path.name}: {e}")
             
-            # Crea record strutturato
-            record = create_structured_record(data_file, gcs_uri, metadata)
+            # Crea record strutturato leggendo MIME type dai file_patterns del config
+            record = create_structured_record(data_file, gcs_uri, metadata, config)
             jsonl_records.append(record)
             
         except Exception as e:
@@ -277,7 +338,7 @@ def upload_directory(src: pathlib.Path, bucket_name: str, prefix: str, patterns:
             safe_print(f"   ... e altri {len(upload_errors) - 5} errori")
     
     # Salva batch.jsonl
-    safe_print("\n📝 Creazione batch.jsonl...")
+    safe_print("\n📝 Creazione batch.jsonl con hash SHA-256...")
     batch_blob_name = f"{prefix}/ingest/batch.jsonl".lstrip("/")
     
     # Backup se esiste
@@ -294,6 +355,7 @@ def upload_directory(src: pathlib.Path, bucket_name: str, prefix: str, patterns:
         batch_blob.upload_from_filename(str(tmp_path), content_type="application/json")
         
         safe_print(f"✅ SUCCESS: batch.jsonl caricato in gs://{bucket_name}/{batch_blob_name}")
+        safe_print(f"🔒 Tutti i file ora hanno hash {HASH_ALGORITHM} per maggiore sicurezza")
         
     except Exception as e:
         safe_print(f"❌ ERRORE creazione batch.jsonl: {e}")
@@ -307,14 +369,15 @@ def upload_directory(src: pathlib.Path, bucket_name: str, prefix: str, patterns:
     safe_print(f"   ✅ File caricati: {successful_uploads}")
     safe_print(f"   ❌ Errori: {len(upload_errors)}")
     safe_print(f"   📊 Record batch: {len(jsonl_records)}")
+    safe_print(f"   🔒 Hash algorithm: {HASH_ALGORITHM}")
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Upload strutturato per sistema di ingestione - FIXED (batch.jsonl)",
+        description="Upload strutturato per sistema di ingestione - SHA-256 UPGRADE (batch.jsonl)",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Esempi:
-  # Upload base
+  # Upload base con SHA-256
   python upload_gcs_ingest.py --src ./downloads --bucket my-bucket --prefix docs --patterns "*.pdf,*.json"
   
   # Upload con refresh completo
@@ -343,7 +406,7 @@ Esempi:
     
     try:
         upload_directory(args.src, args.bucket, args.prefix, patterns_list, args.refresh)
-        safe_print("\n🎉 Upload completato!")
+        safe_print("\n🎉 Upload completato con hash SHA-256!")
     except KeyboardInterrupt:
         safe_print("\n🛑 Upload interrotto dall'utente")
         sys.exit(130)
