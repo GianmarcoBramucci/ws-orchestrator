@@ -1,12 +1,11 @@
 #!/usr/bin/env python3
 """
-download_senato_pdf.py - v10.0 "SIMPLE BUT SMART"
-=================================================
-Basta cazzate, logica semplice ma efficace:
-1. Input: legislatura di partenza + range date
-2. Testa legislature una per una (indietro/avanti) fino a coprire il range
-3. Quando trova una che funziona, la scarica TUTTA per quegli anni
-4. Zero discovery complicata, zero hardcode, zero rotture di cazzo
+download_senato_pdf.py - v13.0 "SIMPLE AND CORRECT"
+===================================================
+Logica corretta e semplice:
+1. Test anni: SEMPRE con BASE_TEMPLATE per legislature passate
+2. Legislatura attuale: anno fine = anno corrente, anno inizio = fine precedente + 1
+3. Cartelle semplici: solo legislatura_XX senza sottocartelle anni
 """
 from __future__ import annotations
 import argparse
@@ -17,170 +16,239 @@ import re
 import sys
 import time
 from pathlib import Path
-from typing import List, Optional, Tuple, Set
+from typing import List, Optional, Tuple, Set, Dict
 from urllib.parse import urljoin
 
 import requests
 from bs4 import BeautifulSoup
 
-# Config semplice
-DELAY_HTML = 1.5
-DELAY_PDF = 1.5  
+# Config
+DELAY_HTML = 2.0
+DELAY_PDF = 2.0  
 JITTER_HTML = 1.5
-JITTER_PDF = 0.8
+JITTER_PDF = 1.0
 RETRIES = 3
-TIMEOUT_HTML = 5
-TIMEOUT_PDF = 5
-BACKOFF = 15
+TIMEOUT_HTML = 3
+TIMEOUT_PDF = 3
+BACKOFF = 20
 
 BASE_TEMPLATE = "https://www.senato.it/legislature/{leg}/lavori/assemblea/resoconti-elenco-cronologico?year={year}"
 BASE_TEMPLATE_ATTUALE = "https://www.senato.it/lavori/assemblea/resoconti-elenco-cronologico?year={year}"
 
-HEADERS = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36"}
+HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+    "Accept-Language": "it-IT,it;q=0.9,en;q=0.8"
+}
 
-# HTTP session
 session = requests.Session()
 session.headers.update(HEADERS)
 
 
-class SimpleSenatoPDFDownloader:
-    """Downloader semplice ma smart per Senato"""
+class SimpleCorrectSenatoPDFDownloader:
+    """Downloader semplice e corretto per Senato"""
     
     def __init__(self):
         self.processed_files = set()
-        self.legislature_anni = {}  # Cache: leg -> lista anni che funzionano
+        self.legislature_info = {}
+        self.current_legislature = None
+        self.current_year = dt.datetime.now().year
     
     def _sleep(self, base: float, jitter: float):
         time.sleep(base + random.uniform(0, jitter))
 
-    def test_legislatura_anno(self, leg: str, year: int) -> bool:
-        """Testa se una legislatura ha documenti per un anno - SEMPLICE"""
+    def identify_current_legislature(self) -> Optional[str]:
+        """Identifica la legislatura corrente dal sito"""
+        print("🔍 Identificazione legislatura corrente...")
+        
         try:
             self._sleep(DELAY_HTML, JITTER_HTML)
             
-            current_year = dt.datetime.now().year
-            if year == current_year:
-                url = BASE_TEMPLATE_ATTUALE.format(year=year)
-            else:
-                url = BASE_TEMPLATE.format(leg=leg, year=year)
-            
+            url = BASE_TEMPLATE_ATTUALE.format(year=self.current_year)
             r = session.get(url, timeout=TIMEOUT_HTML)
-            if r.status_code == 404:
-                return False
             
-            r.raise_for_status()
+            if r.status_code != 200:
+                return None
+                
             soup = BeautifulSoup(r.text, "html.parser")
+            
+            # Cerca nei link PDF
             pdf_links = soup.select('a[href$=".pdf"]')
+            for link in pdf_links[:5]:
+                href = link.get('href', '')
+                # Cerca pattern /legislature/XX/ o simili
+                match = re.search(r'/legislature/(\d+)/', href)
+                if match:
+                    leg = match.group(1)
+                    print(f"  ✅ Legislatura corrente: {leg}")
+                    return leg
+                
+                # O cerca leg19, leg 19, etc
+                match = re.search(r'leg\s*(\d+)', href, re.IGNORECASE)
+                if match:
+                    leg = match.group(1)
+                    print(f"  ✅ Legislatura corrente: {leg}")
+                    return leg
             
-            ha_pdf = len(pdf_links) > 0
-            if ha_pdf:
-                print(f"    ✅ Leg {leg}, anno {year}: {len(pdf_links)} PDF")
+            # Cerca nel testo
+            text = soup.get_text()
+            patterns = [
+                r'XIX\s+legislatura',  # Assumiamo XIX = 19
+                r'(\d+)ª?\s+legislatura',
+                r'Legislatura\s+(\d+)'
+            ]
             
-            return ha_pdf
+            for pattern in patterns:
+                match = re.search(pattern, text, re.IGNORECASE)
+                if match:
+                    leg = match.group(1) if '(' in pattern else '19'  # XIX = 19
+                    print(f"  ✅ Legislatura corrente: {leg}")
+                    return leg
+            
+            return None
             
         except Exception as e:
-            print(f"    ❌ Errore test leg {leg}, anno {year}: {e}")
-            return False
+            print(f"  ❌ Errore: {e}")
+            return None
 
-    def trova_legislature_per_range(self, leg_start: str, year_start: int, year_end: int) -> List[str]:
-        """Trova le legislature che coprono il range di anni - LOGICA SEMPLICE"""
-        print(f"🎯 Cerco legislature per coprire {year_start}-{year_end} (partendo da {leg_start})")
+    def test_legislature_years(self, leg: str) -> Tuple[Optional[int], Optional[int]]:
+        """Testa gli anni di una legislatura PASSATA usando BASE_TEMPLATE"""
+        print(f"  🔍 Test anni legislatura {leg}...")
         
-        legislature_ok = []
-        leg_start_num = int(leg_start)
-        anni_coperti = set()
+        # Range di test
+        min_year = max(1946, self.current_year - 80)
+        max_year = self.current_year
         
-        # Test legislatura di partenza
-        print(f"\n🔍 Test legislatura {leg_start}...")
-        anni_leg_start = []
-        for year in range(year_start, year_end + 1):
-            if self.test_legislatura_anno(leg_start, year):
-                anni_leg_start.append(year)
-                anni_coperti.add(year)
+        years_with_docs = []
         
-        if anni_leg_start:
-            legislature_ok.append(leg_start)
-            print(f"  📊 Legislatura {leg_start} copre anni: {anni_leg_start}")
-        
-        # Vai indietro se servono anni prima
-        anni_mancanti_prima = [y for y in range(year_start, year_end + 1) if y < min(anni_leg_start) if anni_leg_start]
-        if anni_mancanti_prima:
-            print(f"\n⬅️  Servono anni precedenti: {anni_mancanti_prima}")
-            for leg_num in range(leg_start_num - 1, max(1, leg_start_num - 10), -1):
-                leg_str = str(leg_num)
-                print(f"🔍 Test legislatura {leg_str}...")
+        for year in range(min_year, max_year + 1):
+            try:
+                self._sleep(DELAY_HTML, JITTER_HTML)
                 
-                anni_questa_leg = []
-                for year in anni_mancanti_prima:
-                    if self.test_legislatura_anno(leg_str, year):
-                        anni_questa_leg.append(year)
-                        anni_coperti.add(year)
+                # SEMPRE BASE_TEMPLATE per testare
+                url = BASE_TEMPLATE.format(leg=leg, year=year)
+                r = session.get(url, timeout=TIMEOUT_HTML)
                 
-                if anni_questa_leg:
-                    legislature_ok.append(leg_str)
-                    print(f"  📊 Legislatura {leg_str} copre anni: {anni_questa_leg}")
+                if r.status_code == 403:
+                    print(f"    ⚠️  403 per anno {year} - pausa...")
+                    time.sleep(30)
+                    continue
                     
-                    # Aggiorna anni mancanti
-                    anni_mancanti_prima = [y for y in anni_mancanti_prima if y not in anni_coperti]
-                    if not anni_mancanti_prima:
-                        break
-                else:
-                    print(f"  ❌ Legislatura {leg_str} non ha documenti nel range")
-        
-        # Vai avanti se servono anni dopo  
-        anni_mancanti_dopo = [y for y in range(year_start, year_end + 1) if y not in anni_coperti]
-        if anni_mancanti_dopo:
-            print(f"\n➡️  Servono anni successivi: {anni_mancanti_dopo}")
-            for leg_num in range(leg_start_num + 1, leg_start_num + 5):
-                leg_str = str(leg_num)
-                print(f"🔍 Test legislatura {leg_str}...")
-                
-                anni_questa_leg = []
-                for year in anni_mancanti_dopo:
-                    if self.test_legislatura_anno(leg_str, year):
-                        anni_questa_leg.append(year)
-                        anni_coperti.add(year)
-                
-                if anni_questa_leg:
-                    legislature_ok.append(leg_str)
-                    print(f"  📊 Legislatura {leg_str} copre anni: {anni_questa_leg}")
+                if r.status_code == 404:
+                    continue
                     
-                    anni_mancanti_dopo = [y for y in anni_mancanti_dopo if y not in anni_coperti]
-                    if not anni_mancanti_dopo:
-                        break
-                else:
-                    print(f"  ❌ Legislatura {leg_str} non ha documenti nel range")
+                if r.status_code == 200:
+                    soup = BeautifulSoup(r.text, "html.parser")
+                    pdf_links = soup.select('a[href$=".pdf"]')
+                    
+                    if pdf_links:
+                        years_with_docs.append(year)
+                        print(f"    ✅ Anno {year}: {len(pdf_links)} documenti")
+                        
+            except Exception:
+                continue
         
-        # Ordina e return
-        legislature_ok = sorted(list(set(legislature_ok)), key=int)
-        print(f"\n📊 LEGISLATURE TROVATE: {', '.join(legislature_ok)}")
+        if years_with_docs:
+            start_year = min(years_with_docs)
+            end_year = max(years_with_docs)
+            print(f"    📊 Legislatura {leg}: {start_year}-{end_year}")
+            return start_year, end_year
+        else:
+            print(f"    ❌ Legislatura {leg}: nessun documento trovato")
+            return None, None
+
+    def determine_all_legislatures_info(self, start_leg: str) -> Dict[str, Dict]:
+        """Determina info di tutte le legislature necessarie"""
+        print("📊 Determinazione info legislature...")
         
-        anni_non_coperti = [y for y in range(year_start, year_end + 1) if y not in anni_coperti]
-        if anni_non_coperti:
-            print(f"⚠️  ANNI NON COPERTI: {anni_non_coperti}")
+        # Prima identifica la corrente
+        self.current_legislature = self.identify_current_legislature()
+        if not self.current_legislature:
+            print("  ⚠️  Non riesco a identificare la legislatura corrente, assumo 19")
+            self.current_legislature = "19"
         
-        return legislature_ok
+        current_num = int(self.current_legislature)
+        start_num = int(start_leg)
+        
+        # Testa tutte le legislature passate nel range
+        for leg_num in range(max(1, start_num - 5), current_num):
+            leg_str = str(leg_num)
+            start_year, end_year = self.test_legislature_years(leg_str)
+            
+            if start_year and end_year:
+                self.legislature_info[leg_str] = {
+                    'start_year': start_year,
+                    'end_year': end_year,
+                    'exists': True
+                }
+        
+        # Info legislatura corrente
+        if self.current_legislature:
+            # Fine della precedente
+            prev_num = current_num - 1
+            prev_info = self.legislature_info.get(str(prev_num), {})
+            
+            if prev_info.get('end_year'):
+                current_start = prev_info['end_year']
+            else:
+                current_start = self.current_year - 5  # Stima
+            
+            self.legislature_info[self.current_legislature] = {
+                'start_year': current_start,
+                'end_year': self.current_year,
+                'exists': True,
+                'is_current': True
+            }
+            
+            print(f"  📍 Legislatura corrente {self.current_legislature}: {current_start}-{self.current_year}")
+        
+        return self.legislature_info
+
+    def find_legislatures_for_range(self, start_date: dt.date, end_date: dt.date) -> List[str]:
+        """Trova legislature che coprono il range di date"""
+        print(f"🎯 Selezione legislature per {start_date} → {end_date}")
+        
+        selected = []
+        
+        for leg, info in sorted(self.legislature_info.items(), key=lambda x: int(x[0])):
+            if not info.get('exists'):
+                continue
+                
+            leg_start = dt.date(info['start_year'], 1, 1)
+            leg_end = dt.date(info['end_year'], 12, 31)
+            
+            # Check overlap
+            if leg_end >= start_date and leg_start <= end_date:
+                selected.append(leg)
+                print(f"  ✅ Legislatura {leg} ({info['start_year']}-{info['end_year']})")
+        
+        return selected
 
     def get_pdf_links_with_dates(self, leg: str, year: int) -> List[Tuple[str, str, Optional[str]]]:
-        """Prende PDF links + date dalla pagina - SEMPLICE"""
+        """Ottiene i link PDF con le date"""
         self._sleep(DELAY_HTML, JITTER_HTML)
         
-        current_year = dt.datetime.now().year
-        if year == current_year:
+        # Usa template corretto
+        is_current = (leg == self.current_legislature)
+        if is_current:
             url = BASE_TEMPLATE_ATTUALE.format(year=year)
         else:
             url = BASE_TEMPLATE.format(leg=leg, year=year)
         
         try:
             r = session.get(url, timeout=TIMEOUT_HTML)
-            if r.status_code == 404:
+            
+            if r.status_code == 403:
+                print(f"    ⚠️  403 Forbidden")
+                time.sleep(30)
                 return []
-            r.raise_for_status()
+                
+            if r.status_code != 200:
+                return []
             
             soup = BeautifulSoup(r.text, "html.parser")
             links = []
             
-            # Mappa mesi italiani
             mesi = {
                 'gennaio': '01', 'febbraio': '02', 'marzo': '03', 'aprile': '04',
                 'maggio': '05', 'giugno': '06', 'luglio': '07', 'agosto': '08', 
@@ -191,7 +259,7 @@ class SimpleSenatoPDFDownloader:
                 pdf_url = urljoin("https://www.senato.it/", a["href"])
                 filename = pdf_url.rsplit("/", 1)[1]
                 
-                # Cerca data nel testo vicino
+                # Cerca data
                 extracted_date = None
                 for parent in [a.parent, a.parent.parent if a.parent else None]:
                     if not parent:
@@ -199,7 +267,7 @@ class SimpleSenatoPDFDownloader:
                     
                     text = parent.get_text()
                     
-                    # Pattern data italiana: "23 marzo 2025"
+                    # Pattern data italiana
                     match = re.search(r'(\d{1,2})\s+(gennaio|febbraio|marzo|aprile|maggio|giugno|luglio|agosto|settembre|ottobre|novembre|dicembre)\s+(\d{4})', text, re.IGNORECASE)
                     if match:
                         day = match.group(1).zfill(2)
@@ -208,31 +276,23 @@ class SimpleSenatoPDFDownloader:
                         if month:
                             extracted_date = f"{year_found}-{month}-{day}"
                             break
-                    
-                    # Pattern data slash: "23/03/2025"
-                    match = re.search(r'(\d{1,2})/(\d{1,2})/(\d{4})', text)
-                    if match:
-                        day = match.group(1).zfill(2)
-                        month = match.group(2).zfill(2)
-                        year_found = match.group(3)
-                        extracted_date = f"{year_found}-{month}-{day}"
-                        break
                 
                 links.append((pdf_url, filename, extracted_date))
             
             return links
             
         except Exception as e:
-            print(f"  ❌ Errore parsing leg {leg}, anno {year}: {e}")
+            print(f"  ❌ Errore: {e}")
             return []
 
-    def download_pdf(self, url: str, filename: str, leg: str, year: int, extracted_date: Optional[str], dest_dir: Path) -> bool:
-        """Download PDF - SEMPLICE"""
-        file_id = f"{leg}_{year}_{filename}"
+    def download_pdf(self, url: str, filename: str, leg: str, extracted_date: Optional[str], dest_dir: Path) -> bool:
+        """Download PDF - SENZA SOTTOCARTELLE ANNI"""
+        file_id = f"{leg}_{filename}"
         if file_id in self.processed_files:
             return True
         
-        dest_path = dest_dir / f"legislatura_{leg}" / str(year) / filename
+        # Path semplice: solo legislatura_XX/filename.pdf
+        dest_path = dest_dir / f"legislatura_{leg}" / filename
         
         if dest_path.exists():
             print(f"  ✓ Esiste: {filename}")
@@ -244,8 +304,16 @@ class SimpleSenatoPDFDownloader:
         for attempt in range(1, RETRIES + 1):
             try:
                 print(f"  ⬇️  {filename} (tent. {attempt})...")
+                self._sleep(DELAY_PDF, JITTER_PDF)
+                
                 with session.get(url, stream=True, timeout=TIMEOUT_PDF) as r:
+                    if r.status_code == 403:
+                        print(f"       ⚠️  403 - pausa lunga...")
+                        time.sleep(60)
+                        continue
+                        
                     r.raise_for_status()
+                    
                     tmp = dest_path.with_suffix(".part")
                     with open(tmp, "wb") as f:
                         for chunk in r.iter_content(8192):
@@ -254,40 +322,46 @@ class SimpleSenatoPDFDownloader:
                 
                 print(f"  ✅ OK: {filename}")
                 
-                # Metadata SEMPLICE
-                self.create_metadata(dest_path, leg, year, extracted_date)
+                # Metadata
+                self.create_metadata(dest_path, leg, extracted_date)
                 self.processed_files.add(file_id)
-                break
+                return True
                 
             except Exception as e:
                 if attempt == RETRIES:
-                    print(f"  ❌ FAIL: {filename} dopo {RETRIES} tentativi")
+                    print(f"  ❌ FAIL: {filename}")
                     return False
-                print(f"       Retry {attempt}/{RETRIES} fra {BACKOFF}s...")
+                print(f"       Retry {attempt}/{RETRIES}...")
                 time.sleep(BACKOFF)
         
-        self._sleep(DELAY_PDF, JITTER_PDF)
-        return True
+        return False
 
-    def create_metadata(self, pdf_path: Path, leg: str, year: int, extracted_date: Optional[str]):
-        """Crea metadata - SEMPLICE"""
+    def create_metadata(self, pdf_path: Path, leg: str, extracted_date: Optional[str]):
+        """Crea metadata JSON"""
         try:
+            leg_info = self.legislature_info.get(leg, {})
+            
             metadata = {
-                "legislatura": leg,      # ← SO che è questa perché la sto scaricando da qui!
+                "legislatura": leg,
                 "source": "senato",
                 "document_type": "stenographic_report",
                 "institution": "senato_repubblica",
-                "language": "it", 
-                "year": year,            # ← SO che è questo anno perché lo sto processando!
+                "language": "it",
+                "is_current_legislature": leg == self.current_legislature,
                 "created_at": dt.datetime.now(dt.timezone.utc).isoformat()
             }
             
             if extracted_date:
+                metadata["date"] = extracted_date
+                # Estrai anno dalla data
                 try:
-                    dt.datetime.strptime(extracted_date, "%Y-%m-%d")  # Valida
-                    metadata["date"] = extracted_date
-                except ValueError:
+                    year = int(extracted_date.split('-')[0])
+                    metadata["year"] = year
+                except:
                     pass
+            
+            if leg_info:
+                metadata["legislature_years"] = f"{leg_info.get('start_year', '?')}-{leg_info.get('end_year', '?')}"
             
             json_path = pdf_path.with_suffix(".json")
             with open(json_path, "w", encoding="utf-8") as f:
@@ -296,110 +370,121 @@ class SimpleSenatoPDFDownloader:
         except Exception as e:
             print(f"  ⚠️  Errore metadata: {e}")
 
-    def download_legislatura(self, leg: str, year_start: int, year_end: int, dest_dir: Path) -> Tuple[int, int]:
-        """Scarica una legislatura per il range di anni - SEMPLICE"""
-        print(f"\n📄 SCARICO LEGISLATURA {leg} ({year_start}-{year_end})")
+    def download_legislature(self, leg: str, start_date: dt.date, end_date: dt.date, dest_dir: Path) -> Tuple[int, int]:
+        """Scarica una legislatura nel range di date"""
+        print(f"\n📄 DOWNLOAD LEGISLATURA {leg}")
+        
+        leg_info = self.legislature_info.get(leg, {})
+        is_current = leg_info.get('is_current', False)
+        
+        if is_current:
+            print(f"  🌟 LEGISLATURA CORRENTE - uso template attuale")
+        
+        # Anni da processare
+        year_start = max(leg_info.get('start_year', start_date.year), start_date.year)
+        year_end = min(leg_info.get('end_year', end_date.year), end_date.year)
         
         total_ok = 0
         total_err = 0
         
         for year in range(year_start, year_end + 1):
             links = self.get_pdf_links_with_dates(leg, year)
+            
             if not links:
                 print(f"  📭 Anno {year}: nessun PDF")
                 continue
             
-            print(f"  📄 Anno {year}: {len(links)} PDF")
+            # Filtra per date se necessario
+            filtered_links = []
+            for url, filename, date_str in links:
+                if date_str:
+                    try:
+                        doc_date = dt.datetime.strptime(date_str, "%Y-%m-%d").date()
+                        if doc_date >= start_date and doc_date <= end_date:
+                            filtered_links.append((url, filename, date_str))
+                    except:
+                        filtered_links.append((url, filename, date_str))
+                else:
+                    # Se non ho la data, includo comunque
+                    filtered_links.append((url, filename, date_str))
             
-            year_ok = 0
-            year_err = 0
+            if not filtered_links:
+                print(f"  📭 Anno {year}: nessun PDF nel range date")
+                continue
+                
+            print(f"  📄 Anno {year}: {len(filtered_links)} PDF")
             
-            for url, filename, date in links:
-                if self.download_pdf(url, filename, leg, year, date, dest_dir):
-                    year_ok += 1
+            for url, filename, date in filtered_links:
+                if self.download_pdf(url, filename, leg, date, dest_dir):
                     total_ok += 1
                 else:
-                    year_err += 1
                     total_err += 1
-            
-            print(f"    📊 Anno {year}: {year_ok} OK, {year_err} errori")
         
-        print(f"  📊 Legislatura {leg}: {total_ok} scaricati, {total_err} errori")
+        print(f"  📊 Totale: {total_ok} OK, {total_err} errori")
         return total_ok, total_err
 
     def run(self, leg_start: str, date_start: Optional[dt.date], date_end: Optional[dt.date], dest_dir: Path) -> bool:
-        """RUN principale - SEMPLICE"""
-        print(f"🏛️  SENATO - DOWNLOAD SEMPLICE MA SMART")
-        print(f"📋 Partenza: legislatura {leg_start}")
+        """Run principale"""
+        print(f"🏛️  SENATO - SIMPLE AND CORRECT DOWNLOADER")
+        print(f"📋 Legislatura riferimento: {leg_start}")
         
-        # Calcola range anni
-        if date_start:
-            year_start = date_start.year
-        else:
-            year_start = dt.datetime.now().year
+        if not date_start:
+            date_start = dt.date(1946, 1, 1)
+        if not date_end:
+            date_end = dt.date.today()
             
-        if date_end:
-            year_end = date_end.year
-        else:
-            year_end = dt.datetime.now().year
+        print(f"📅 Range date: {date_start} → {date_end}")
+        print(f"📁 Output: {dest_dir}")
         
-        print(f"📅 Range anni: {year_start} - {year_end}")
-        print(f"📁 Destinazione: {dest_dir}")
+        # Step 1: Determina info legislature
+        self.determine_all_legislatures_info(leg_start)
         
-        # Trova legislature necessarie
-        legislature = self.trova_legislature_per_range(leg_start, year_start, year_end)
+        # Step 2: Seleziona legislature per il range
+        legislature = self.find_legislatures_for_range(date_start, date_end)
         
         if not legislature:
-            print("❌ Nessuna legislatura trovata")
+            print("❌ Nessuna legislatura nel range")
             return False
         
-        # Scarica ogni legislatura
-        total_downloaded = 0
-        total_errors = 0
+        # Step 3: Download
+        total_ok = 0
+        total_err = 0
         
         for i, leg in enumerate(legislature, 1):
             print(f"\n{'='*50}")
             print(f"LEGISLATURA {i}/{len(legislature)}: {leg}")
             print(f"{'='*50}")
             
-            downloaded, errors = self.download_legislatura(leg, year_start, year_end, dest_dir)
-            total_downloaded += downloaded
-            total_errors += errors
+            ok, err = self.download_legislature(leg, date_start, date_end, dest_dir)
+            total_ok += ok
+            total_err += err
         
         print(f"\n🏁 COMPLETATO")
-        print(f"📈 Scaricati: {total_downloaded}")
-        print(f"❌ Errori: {total_errors}")
-        print(f"🏛️  Legislature: {', '.join(legislature)}")
+        print(f"✅ Scaricati: {total_ok}")
+        print(f"❌ Errori: {total_err}")
         
-        return total_errors == 0
+        return total_err == 0
 
 
 def main():
     parser = argparse.ArgumentParser(
-        description="Senato PDF Downloader - SIMPLE BUT SMART",
-        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description="Senato Downloader - Simple and Correct",
         epilog="""
 Esempi:
-  # Dal 2013 a oggi partendo dalla 19
-  python download_senato_pdf.py --leg 19 --from 2013-01-01 --out ./downloads
-  
-  # Range specifico
-  python download_senato_pdf.py --leg 18 --from 2015-01-01 --to 2020-12-31 --out ./downloads
-  
-  # Solo la legislatura specificata
-  python download_senato_pdf.py --leg 19 --out ./downloads
+  python download_senato_pdf.py --leg 17 --from 2013-03-15 --out ./downloads
+  python download_senato_pdf.py --leg 18 --from 2018-03-23 --to 2022-10-12 --out ./downloads
         """
     )
     
-    parser.add_argument("--leg", required=True, help="Legislatura di partenza")
-    parser.add_argument("--from", dest="from_date", type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date(), help="Data iniziale (YYYY-MM-DD)")
-    parser.add_argument("--to", dest="to_date", type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date(), help="Data finale (YYYY-MM-DD)")
-    parser.add_argument("--out", type=Path, required=True, help="Cartella di output")
+    parser.add_argument("--leg", required=True, help="Legislatura di riferimento")
+    parser.add_argument("--from", dest="from_date", type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date(), help="Data inizio")
+    parser.add_argument("--to", dest="to_date", type=lambda s: dt.datetime.strptime(s, "%Y-%m-%d").date(), help="Data fine")
+    parser.add_argument("--out", type=Path, required=True, help="Cartella output")
     
     args = parser.parse_args()
     
     try:
-        downloader = SimpleSenatoPDFDownloader()
+        downloader = SimpleCorrectSenatoPDFDownloader()
         success = downloader.run(args.leg, args.from_date, args.to_date, args.out)
         sys.exit(0 if success else 1)
         
