@@ -2,12 +2,13 @@
 requests>=2.31.0
 beautifulsoup4>=4.12.0
 
-# Google Cloud Platform
+# Google Cloud Platform e APIs
 google-cloud-storage>=2.10.0
 google-auth>=2.23.0
+google-auth-oauthlib>=1.0.0
+google-api-python-client>=2.100.0
 
 # YouTube APIs
-google-api-python-client>=2.100.0
 youtube-transcript-api>=0.6.0
 
 # PDF processing
@@ -18,6 +19,9 @@ tqdm>=4.66.0
 
 # Data handling
 python-dateutil>=2.8.0
+
+# Parsing e processing
+lxml>=4.9.0
 
 # Optional: per logging avanzato
 colorlog>=6.7.0
@@ -30,5 +34,6 @@ black>=23.0.0
 flake8>=6.0.0
 mypy>=1.5.0
 
-# Lxml parser per BeautifulSoup (più veloce)
-lxml>=4.9.0
+pathvalidate
+telethon 
+python-dotenv
