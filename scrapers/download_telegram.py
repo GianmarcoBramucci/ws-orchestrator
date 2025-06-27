@@ -241,13 +241,13 @@ def main():
         epilog="""
 Esempi:
   # Download normale
-  python telegram_downloader.py --out downloads/telegram --channel fdiufficiale
+  python download_telegram.py --out downloads/telegram --channel fdiufficiale
   
   # Con controllo duplicati GCS
-  python telegram_downloader.py --out downloads/telegram --channel fdiufficiale --bucket documenti_fdi --gcs-prefix telegram
+  python download_telegram.py --out downloads/telegram --channel fdiufficiale --bucket documenti_fdi --gcs-prefix telegram
   
   # Range di date specifico
-  python telegram_downloader.py --out downloads/telegram --from 2025-06-01 --to 2025-06-24
+  python download_telegram.py --out downloads/telegram --from 2025-06-01 --to 2025-06-24
         """
     )
     p.add_argument("--out", required=True, help="Directory di output locale")
